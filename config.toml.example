@@ -16,10 +16,16 @@ name = "alpha"
 language = "en"                       # HUD locale
 
 [assistant.wake_word]
-mode = "pretrained"                   # pretrained (bundled) | kws (any name, more CPU)
-phrase = "hey alpha"
-model = "hey_alpha"                   # must match a bundled model or a trained custom one
-threshold = 0.5
+# Tier 1 (zero setup) = pretrained openWakeWord models. Bundled options:
+#   hey_jarvis, hey_mycroft, hey_rhasspy, alexa
+#   (openWakeWord ships these; "hey alpha" has no pretrained model)
+# Tier 3 (any name instantly) = kws: whisper-tiny keyword spotting. This is
+# the default so the assistant works out of the box with any name. It uses
+# more CPU than Tier 1 — pick a bundled model for maximum battery life.
+mode = "kws"                      # kws (any name, instant default) | pretrained
+phrase = "hey alpha"              # free-form in kws mode
+model = "hey_jarvis"              # only used in pretrained mode
+threshold = 0.6
 refractory_s = 2.0
 
 [stt]

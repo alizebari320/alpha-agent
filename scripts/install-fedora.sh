@@ -50,7 +50,25 @@ else
   warn "no opencode config found; run `alpha init` after setting one up, or edit config.toml"
 fi
 
-# --- 5. systemd --user service ----------------------------------------------
+# --- 5. first-run model downloads (spec: up front, with progress) ----------
+log "downloading speech models (whisper + piper voices + wake word)"
+uv run python - <<'PY' || warn "model pre-download failed; they will download on first voice command"
+import logging
+logging.basicConfig(level=logging.INFO)
+from alpha import models
+
+print("==> whisper STT model", flush=True)
+models.ensure_whisper(models.pick_whisper_model("auto"))
+print("==> piper voices", flush=True)
+models.ensure_piper_voice("en_US-lessac-medium")
+models.ensure_piper_voice("ar_JO-kareem-medium")
+print("==> openWakeWord pretrained models", flush=True)
+from alpha.wake import BUNDLED_WAKEWORDS
+models.ensure_openwakeword(list(BUNDLED_WAKEWORDS))
+print("==> model download complete", flush=True)
+PY
+
+# --- 6. systemd --user service ----------------------------------------------
 log "installing systemd --user unit"
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
@@ -62,3 +80,4 @@ systemctl --user daemon-reload
 systemctl --user enable --now alpha || warn "could not start service; try: systemctl --user start alpha"
 
 log "Done. Check it with:  alpha doctor   and   systemctl --user status alpha"
+log "Then say:  'Hey Alpha'  (or the wake word you chose)"

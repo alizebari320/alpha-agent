@@ -21,6 +21,7 @@ from . import paths
 from .config import Config, load_config
 from .credentials import get_key, keyring_available
 from .log import redact
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -134,12 +135,64 @@ def run_doctor(cfg: Config | None, network: bool = True) -> DoctorReport:
     writable = os.access(paths.STATE_DIR, os.W_OK)
     add("state dirs", writable, str(paths.STATE_DIR))
 
-    # 8. future milestones
+    # 8. M2 audio/models
+    _check_audio_pipeline(cfg, add)
+
+    # 9. future milestones
     add("ydotoold / uinput", True, "M4 (input injection) — not yet implemented", "skip")
     add("AT-SPI accessibility", True, "M5 (vision) — not yet implemented", "skip")
-    add("wake word model", True, "M2 (audio) — not yet implemented", "skip")
 
     return report
+
+
+def _check_audio_pipeline(cfg: Config | None, add) -> None:
+    from . import models as models_mod
+
+    if cfg is None:
+        add("audio pipeline", False, "no config", "fail")
+        return
+
+    # mic + default input visible
+    try:
+        import sounddevice as sd
+
+        _, idx = sd.default.device
+        dev = sd.query_devices(kind="input")
+        add("default input device", True, dev["name"])
+    except Exception as e:
+        add("default input device", False, redact(str(e))[:120], "fail")
+
+    # wake word
+    w = cfg.assistant.wake_word
+    if w.mode == "kws":
+        add("wake word", True, f"kws phrase={w.phrase!r} (works for any name)")
+    else:
+        from .wake import BUNDLED_WAKEWORDS
+
+        ok = w.model in BUNDLED_WAKEWORDS or (paths.WAKEWORD_DIR / f"{w.model}.onnx").exists()
+        add("wake word model", ok,
+            f"{w.model} (pretrained)" if ok else f"{w.model} not found", "ok" if ok else "fail")
+
+    # STT model presence (tiny downloaded lazily — warn rather than fail)
+    model = models_mod.pick_whisper_model(cfg.stt.model)
+    hf = Path.home() / ".cache" / "huggingface" / "hub"
+    present = any(model.split("/")[-1] in p.name for p in hf.glob("models--*")) if hf.exists() else False
+    add("whisper STT model", True, f"{model} ({'downloaded' if present else 'downloads on first run'})",
+        "ok" if present else "warn")
+
+    # piper voices
+    for v in (cfg.tts.voice, cfg.tts.arabic_voice):
+        d = paths.MODEL_DIR / "piper" / v
+        present = (d / f"{v}.onnx").exists()
+        add(f"piper voice {v}", present, "downloaded" if present else "will download on first use",
+            "ok" if present else "warn")
+
+    # VAD
+    from .listen import Recorder
+
+    rec = Recorder()
+    add("voice activity detector", rec.vad is not None, "silero" if rec.vad else "energy fallback",
+        "ok" if rec.vad else "warn")
 
 
 def _check_provider(cfg: Config, add) -> None:

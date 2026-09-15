@@ -4,8 +4,8 @@ import tomllib
 
 import pytest
 
-from alpha import paths
-from alpha.config import BUNDLED_WAKEWORDS, Config, ConfigError, parse_config
+from alpha.config import Config, ConfigError, parse_config
+from alpha.wake import BUNDLED_WAKEWORDS
 
 
 def test_parse_defaults():
@@ -24,7 +24,7 @@ def test_parse_full_config():
         language = "ar"
 
         [assistant.wake_word]
-        model = "hey_alpha"
+        model = "hey_jarvis"
         mode = "pretrained"
         phrase = "hey jarvis"
         threshold = 0.7
@@ -58,10 +58,23 @@ def test_parse_full_config():
     assert cfg.llm.planner.provider == "agentrouter"
 
 
-def test_unknown_wake_word_rejected():
-    data = {"assistant": {"wake_word": {"model": "hey_nonexistent"}}}
+def test_unknown_pretrained_wake_word_rejected():
+    data = {"assistant": {"wake_word": {"mode": "pretrained", "model": "hey_nonexistent"}}}
     with pytest.raises(ConfigError):
         parse_config(data)
+
+
+def test_kws_mode_allows_any_phrase():
+    data = {"assistant": {"wake_word": {"mode": "kws", "phrase": "hey alpha"}}}
+    cfg = parse_config(data)
+    assert cfg.assistant.wake_word.phrase == "hey alpha"
+    assert cfg.assistant.wake_word.mode == "kws"
+
+
+def test_default_mode_is_kws():
+    # Spec §8 Tier 3: works with ANY name instantly out of the box.
+    cfg = parse_config({})
+    assert cfg.assistant.wake_word.mode == "kws"
 
 
 def test_invalid_vision_mode():
@@ -85,3 +98,5 @@ def test_negative_spend_cap_rejected():
 def test_bundled_wakewords_present():
     # Tier 1 needs at least a few pretrained names so the wizard has options.
     assert len(BUNDLED_WAKEWORDS) >= 4
+    # These are the models openwakeword actually ships (verified live).
+    assert "hey_jarvis" in BUNDLED_WAKEWORDS

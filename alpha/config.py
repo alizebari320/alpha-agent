@@ -27,16 +27,22 @@ class ConfigError(Exception):
 # --------------------------------------------------------------------------
 
 
+VALID_WAKE_MODES = {"pretrained", "kws"}
+VALID_VISION_MODES = {"auto", "on", "off"}
+
+
 @dataclass
 class WakeWordConfig:
-    # Tier 1: shipped pretrained openWakeWord models. Tier 3: "kws" keyword
-    # spotting (whisper-tiny fuzzy match, works with any name, more CPU).
-    mode: str = "pretrained"  # pretrained | kws
+    # Tier 1: shipped pretrained openWakeWord models (wake.BUNDLED_WAKEWORDS).
+    # Tier 3: "kws" keyword spotting (whisper-tiny fuzzy match) — works with
+    # ANY name immediately. This is the DEFAULT because it makes the
+    # configured wake phrase work out of the box with zero training.
+    mode: str = "kws"  # pretrained | kws
     phrase: str = "hey alpha"
-    # Must be one of the bundled models (see alpha/wake.py) unless a custom
-    # trained model exists in ~/.local/share/alpha/wakewords/.
-    model: str = "hey_alpha"
-    threshold: float = 0.5
+    # Only used when mode="pretrained". Must be one of wake.BUNDLED_WAKEWORDS
+    # unless a custom trained model exists in ~/.local/share/alpha/wakewords/.
+    model: str = "hey_jarvis"
+    threshold: float = 0.6
     refractory_s: float = 2.0
 
 
@@ -150,9 +156,7 @@ def _parse_llm_role(data: dict[str, Any], default: LLMRole) -> LLMRole:
     )
 
 
-VALID_WAKE_MODES = {"pretrained", "kws"}
 VALID_VISION_MODES = {"auto", "on", "off"}
-BUNDLED_WAKEWORDS = {"hey_alpha", "hey_jarvis", "hey_computer", "hey_assistant", "hey_mycroft"}
 
 
 def parse_config(data: dict[str, Any]) -> Config:
@@ -164,23 +168,25 @@ def parse_config(data: dict[str, Any]) -> Config:
     cfg.assistant.language = str(a.get("language", cfg.assistant.language))
     w = a.get("wake_word", {}) or {}
     cfg.assistant.wake_word = WakeWordConfig(
-        mode=str(w.get("mode", "pretrained")),
+        mode=str(w.get("mode", "kws")),
         phrase=str(w.get("phrase", f"hey {cfg.assistant.name}")),
-        model=str(w.get("model", "hey_alpha")),
-        threshold=float(w.get("threshold", 0.5)),
+        model=str(w.get("model", "hey_jarvis")),
+        threshold=float(w.get("threshold", 0.6)),
         refractory_s=float(w.get("refractory_s", 2.0)),
     )
     if cfg.assistant.wake_word.mode not in VALID_WAKE_MODES:
         raise ConfigError(f"wake_word.mode must be one of {sorted(VALID_WAKE_MODES)}")
-    if cfg.assistant.wake_word.model not in BUNDLED_WAKEWORDS:
-        # Custom trained models are allowed if the file exists.
-        model_path = paths.WAKEWORD_DIR / f"{cfg.assistant.wake_word.model}.onnx"
-        if not model_path.exists():
-            raise ConfigError(
-                f"unknown wake word model '{cfg.assistant.wake_word.model}'; "
-                f"bundled: {sorted(BUNDLED_WAKEWORDS)}, or train one with "
-                f"scripts/train-wakeword.py"
-            )
+    if cfg.assistant.wake_word.mode == "pretrained":
+        from .wake import BUNDLED_WAKEWORDS
+
+        if cfg.assistant.wake_word.model not in BUNDLED_WAKEWORDS:
+            model_path = paths.WAKEWORD_DIR / f"{cfg.assistant.wake_word.model}.onnx"
+            if not model_path.exists():
+                raise ConfigError(
+                    f"unknown pretrained wake word model '{cfg.assistant.wake_word.model}'; "
+                    f"bundled: {list(BUNDLED_WAKEWORDS)}, or train one with "
+                    f"scripts/train-wakeword.py, or switch to mode 'kws'"
+                )
 
     s = _get(data, "stt", default={}) or {}
     cfg.stt = STTConfig(

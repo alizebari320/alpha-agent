@@ -1,9 +1,16 @@
-"""The Alpha daemon: a background state machine.
+"""The Alpha daemon: background state machine + the M2 audio pipeline.
 
-State machine (IDLE -> LISTENING -> THINKING -> ACTING -> SPEAKING -> IDLE).
-For M1 only IDLE is wired; later milestones add the real transitions. The
-daemon's job right now is to load config, log "idle" and stay alive so the
-systemd --user unit can be verified.
+States: IDLE -> LISTENING -> THINKING -> (ACTING) -> SPEAKING -> IDLE.
+
+M2 wiring:
+  IDLE      mic open, wake word matcher active (pretrained or kws)
+  LISTENING ack sound, record_utterance()
+  THINKING  whisper transcribes (M6 adds the LLM planner/executor)
+  SPEAKING  piper speaks
+
+Blocking audio/ML work runs in threads (asyncio.to_thread) so the event loop
+stays responsive for HUD/hotkeys in later milestones. Everything heavy is
+lazy-loaded; after idle_unload_s it is freed again (§9).
 """
 
 from __future__ import annotations
@@ -11,8 +18,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import time
 from enum import Enum
 
+import numpy as np
+
+from .audio import FRAME_SAMPLES, Mic, Speaker, ack_sound, error_sound
 from .config import Config, load_config
 
 log = logging.getLogger(__name__)
@@ -28,22 +39,99 @@ class State(str, Enum):
     ERROR = "error"
 
 
+KWS_WINDOW_S = 2.0      # rolling KWS window (§8 Tier 3)
+KWS_CHECK_EVERY_S = 1.5  # how often the window is re-decoded
+
+
 class Daemon:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.state = State.IDLE
         self._stop = asyncio.Event()
-        self._lazy = {}  # slot for lazily-loaded components (wake, stt, tts...)
+
+        # Audio (mic is the only eager component — everything else lazy, §9)
+        self.mic = Mic()
+        self.speaker = Speaker()
+
+        # Lazy components
+        self._wake = None      # PretrainedWake | KWSWake
+        self._stt = None       # Transcriber
+        self._tts = None       # SpeakerTTS
+        self._recorder = None  # Recorder
+        self._last_busy = time.time()
+
+        # KWS rolling-window state
+        self._kws_buf = np.zeros(0, dtype=np.int16)
+        self._kws_since_check = 0.0
+        self._kws_last_hit = 0.0
+        self._busy = False
+
+    # ---------------- lazy loaders ----------------
+
+    def _get_wake(self):
+        if self._wake is None:
+            w = self.cfg.assistant.wake_word
+            if w.mode == "kws":
+                from .wake import KWSWake
+
+                self._wake = KWSWake(w.phrase, threshold=w.threshold)
+            else:
+                from .wake import PretrainedWake
+
+                self._wake = PretrainedWake(w.model, threshold=w.threshold,
+                                            refractory_s=w.refractory_s)
+        return self._wake
+
+    def _get_stt(self):
+        if self._stt is None:
+            from .stt import Transcriber
+
+            self._stt = Transcriber(self.cfg.stt.model, self.cfg.stt.language)
+        return self._stt
+
+    def _get_tts(self):
+        if self._tts is None:
+            from .tts import SpeakerTTS
+
+            self._tts = SpeakerTTS(self.cfg.tts.voice, self.cfg.tts.arabic_voice,
+                                   self.cfg.tts.volume, self.speaker)
+        return self._tts
+
+    def _get_recorder(self):
+        if self._recorder is None:
+            from .listen import Recorder
+
+            self._recorder = Recorder()
+        return self._recorder
+
+    def _unload_heavy(self) -> None:
+        """Idle timeout: free the REQUEST transcriber + piper (§9).
+
+        The wake matcher (whisper-tiny or openwakeword) stays resident — per
+        the spec, only the wake-word model may live at idle."""
+        if self._stt is not None:
+            self._stt.unload()
+            self._stt = None
+        if self._tts is not None:
+            self._tts.unload()
+            self._tts = None
+        log.info("idle unload: freed whisper/piper (wake matcher stays resident)")
+
+    # ---------------- main loop ----------------
 
     async def run(self) -> None:
         log.info("alpha-agent daemon starting (assistant=%r, state=%s)",
                  self.cfg.assistant.name, self.state.value)
         self._install_signal_handlers()
-        # M1: idle forever until SIGTERM/SIGINT. The wake loop lands in M2.
+        self.mic.start()
+        log.info("wake word mode=%s phrase=%r — listening",
+                 self.cfg.assistant.wake_word.mode, self.cfg.assistant.wake_word.phrase)
         try:
-            await self._stop.wait()
+            await self._main()
         finally:
             log.info("alpha-agent daemon stopping (state=%s)", self.state.value)
+            self.speaker.stop()
+            self.mic.stop(release_device=True)
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -53,9 +141,119 @@ class Daemon:
             except NotImplementedError:  # pragma: no cover
                 pass
 
-    def transition(self, new: State) -> None:
-        log.info("state %s -> %s", self.state.value, new.value)
-        self.state = new
+    async def _main(self) -> None:
+        from .wake import KWSWake
+
+        while not self._stop.is_set():
+            if self._busy:
+                await asyncio.sleep(0.05)
+                continue
+
+            # Idle-unload: free heavy models after cfg.resources.idle_unload_s.
+            if (self.state == State.IDLE and self._stt is not None
+                    and (time.time() - self._last_busy) > self.cfg.resources.idle_unload_s):
+                self._unload_heavy()
+
+            frame = self.mic.pop_samples(FRAME_SAMPLES)
+            if frame is None:
+                await asyncio.sleep(0.005)
+                continue
+
+            wake = self._get_wake()
+            if isinstance(wake, KWSWake):
+                heard = await self._kws_step(wake, frame)
+            else:
+                heard = wake.feed(frame)
+
+            if heard:
+                await self._handle_wake()
+
+    async def _kws_step(self, wake, frame: np.ndarray) -> bool:
+        """Maintain a rolling 2 s window; every KWS_CHECK_EVERY_S, transcribe it
+        and fuzzy-match the wake phrase (§8 Tier 3)."""
+        self._kws_buf = np.concatenate([self._kws_buf, frame])
+        max_samples = int(KWS_WINDOW_S * 16000)
+        if len(self._kws_buf) > max_samples:
+            self._kws_buf = self._kws_buf[-max_samples:]
+        self._kws_since_check += len(frame) / 16000.0
+        if self._kws_since_check < KWS_CHECK_EVERY_S:
+            return False
+        self._kws_since_check = 0.0
+        if len(self._kws_buf) < max_samples * 0.9:
+            return False
+        # refractory: don't retrigger immediately after a hit
+        if (time.time() - self._kws_last_hit) < 5.0:
+            return False
+
+        window = self._kws_buf.copy()
+
+        # VAD gate (spec §8 Tier 3): skip whisper entirely when the window is
+        # just silence. This is what keeps idle CPU inside the §9 budget —
+        # whisper only runs when someone is actually speaking.
+        recorder = self._get_recorder()
+        ratio = await asyncio.to_thread(recorder.speech_ratio, window)
+        if ratio < 0.15:
+            return False
+
+        heard = await asyncio.to_thread(wake.feed_utterance, window)
+        if heard:
+            self._kws_last_hit = time.time()
+            self._kws_buf = np.zeros(0, dtype=np.int16)
+        return heard
+
+    async def _handle_wake(self) -> None:
+        self._busy = True
+        self._last_busy = time.time()
+        try:
+            self.transition(State.LISTENING)
+
+            pcm, sr = ack_sound()
+            await asyncio.to_thread(self._play_and_wait, pcm, sr)
+
+            # Let the ack sound finish; drop pre-wake audio but keep whatever
+            # the user is saying RIGHT NOW (the ring keeps filling from the mic).
+            await asyncio.sleep(0.1)
+            self.mic.clear()
+
+            # 1) record the request
+            request = await asyncio.to_thread(
+                self._get_recorder().record_utterance, self.mic.ring
+            )
+            if len(request) < 1600:  # <100ms
+                await self._say_error("I didn't catch anything; try again.")
+                return
+
+            # 2) transcribe
+            self.transition(State.THINKING)
+            text = await asyncio.to_thread(self._get_stt().transcribe, request)
+            log.info("request transcript: %r", text)
+            if not text:
+                await self._say_error("Sorry, I couldn't understand that.")
+                return
+
+            # 3) M2 acceptance: echo the transcript back.
+            self.transition(State.SPEAKING)
+            await asyncio.to_thread(self._say, text)
+        finally:
+            self.transition(State.IDLE)
+            self.mic.clear()
+            self._last_busy = time.time()
+            self._busy = False
+
+    def _play_and_wait(self, pcm: np.ndarray, sr: int) -> None:
+        self.speaker.play_pcm(pcm, sr)
+        self.speaker.wait_done()
+
+    def _say(self, text: str) -> None:
+        try:
+            self._get_tts().say(text)
+        except Exception as e:
+            log.error("TTS failed: %s", e)
+
+    async def _say_error(self, msg: str) -> None:
+        pcm, sr = error_sound()
+        await asyncio.to_thread(self._play_and_wait, pcm, sr)
+        await asyncio.to_thread(self._say, msg)
 
 
 async def main_async() -> int:
