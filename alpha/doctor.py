@@ -138,8 +138,28 @@ def run_doctor(cfg: Config | None, network: bool = True) -> DoctorReport:
     # 8. M2 audio/models
     _check_audio_pipeline(cfg, add)
 
-    # 9. future milestones
-    add("ydotoold / uinput", True, "M4 (input injection) — not yet implemented", "skip")
+    # 9. M4 input + safety
+    import os as _os
+
+    uinput_ok = _os.access("/dev/uinput", _os.W_OK)
+    add("input backend (/dev/uinput)", uinput_ok,
+        "native uinput (Wayland+X11)" if uinput_ok else
+        "no write access — add user to 'input' group and re-login",
+        "ok" if uinput_ok else "fail")
+    try:
+        import subprocess
+
+        r = subprocess.run(
+            ["gsettings", "get", "org.gnome.settings-daemon.plugins.media-keys",
+             "custom-keybindings"], capture_output=True, text=True, timeout=5)
+        has_abort = "alpha-abort" in (r.stdout or "")
+        add("abort hotkey (Ctrl+Alt+Q)", has_abort,
+            "registered" if has_abort else "not registered — run `alpha install-hotkeys`",
+            "ok" if has_abort else "warn")
+    except Exception:
+        add("abort hotkey (Ctrl+Alt+Q)", True, "not GNOME (gsettings unavailable)", "skip")
+
+    # 10. future milestones
     add("AT-SPI accessibility", True, "M5 (vision) — not yet implemented", "skip")
 
     return report

@@ -36,7 +36,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("unmute", help="unmute the running daemon")
     sub.add_parser("mute-toggle", help="toggle mute on the running daemon")
     sub.add_parser("state", help="query the running daemon's state")
-    sub.add_parser("install-hotkeys", help="register GNOME/Wayland mute hotkey (Ctrl+Alt+M)")
+    sub.add_parser("abort", help="ABORT: kill any running action loop instantly (§10)")
+    sub.add_parser("install-hotkeys", help="register GNOME hotkeys: Ctrl+Alt+M mute, Ctrl+Alt+Q abort")
     return p
 
 
@@ -106,17 +107,21 @@ def _cmd_ctl(cmd: str) -> int:
     if cmd == "state":
         print(f"state={reply.get('state')} muted={reply.get('muted')} "
               f"assistant={reply.get('assistant')}")
+    elif cmd == "abort":
+        print("aborted — any running action loop was killed")
     else:
         print(f"muted={reply.get('muted')}")
     return 0
 
 
 def _cmd_install_hotkeys() -> int:
-    """Register a GNOME custom keybinding: Ctrl+Alt+M -> alpha mute-toggle.
+    """Register GNOME custom keybindings (user-level gsettings, no sudo):
+      Ctrl+Alt+M -> alpha mute-toggle
+      Ctrl+Alt+Q -> alpha abort   (spec §10 global abort)
 
-    On GNOME Wayland apps cannot grab global keys; the supported mechanism is
-    a session keybinding running a command. This is user-level gsettings —
-    no root needed, reversible via Settings > Keyboard > Custom Shortcuts.
+    On GNOME Wayland apps cannot grab global keys; session keybindings running
+    a command are the supported mechanism. On X11 the daemon could also grab
+    keys itself; the keybinding works everywhere GNOME runs.
     """
     import subprocess
 
@@ -125,22 +130,35 @@ def _cmd_install_hotkeys() -> int:
         return subprocess.run(["gsettings", *args], capture_output=True, text=True)
 
     if gs("get", base, "custom-keybindings").returncode != 0:
-        print("gsettings/GNOME not available — on X11 the daemon grabs keys directly.")
+        print("gsettings/GNOME not available")
         return 1
 
-    path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/alpha-mute/"
+    cmd = f"{sys.executable} -m alpha"
+    bindings = {
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/alpha-mute/":
+            ("Alpha mute", f"{cmd} mute-toggle", "<Primary><Alt>m"),
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/alpha-abort/":
+            ("Alpha ABORT", f"{cmd} abort", "<Primary><Alt>q"),
+    }
+
     cur = gs("get", base, "custom-keybindings").stdout.strip()
-    if path not in cur:
-        new = cur[:-1] + (", " if cur.endswith("]") and cur != "@as []" else "") + f"'{path}']"
-        if cur == "@as []" or cur == "@as []\n":
-            new = f"['{path}']"
-        gs("set", base, "custom-keybindings", new)
-    kb = base + ".custom-keybinding:" + path
-    gs("set", kb, "name", "Alpha mute")
-    # The venv python can run the installed package from any cwd.
-    gs("set", kb, "command", f"{sys.executable} -m alpha mute-toggle")
-    gs("set", kb, "binding", "<Primary><Alt>m")
-    print("Registered Ctrl+Alt+M -> 'alpha mute-toggle' (GNOME custom keybinding).")
+    paths_list = [p for p in bindings if p not in cur]
+    if paths_list:
+        import ast
+
+        try:
+            existing = ast.literal_eval(cur)
+        except Exception:
+            existing = []
+        new = list(existing) + paths_list
+        gs("set", base, "custom-keybindings", repr(new))
+
+    for path, (name, command, binding) in bindings.items():
+        kb = base + ".custom-keybinding:" + path
+        gs("set", kb, "name", name)
+        gs("set", kb, "command", command)
+        gs("set", kb, "binding", binding)
+        print(f"registered {binding} -> {name}")
     print("Remove anytime in Settings > Keyboard > View and Customize Shortcuts.")
     return 0
 
@@ -162,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(not args.no_network)
     if args.command == "init":
         return _cmd_init()
-    if args.command in ("mute", "unmute", "mute-toggle", "state"):
+    if args.command in ("mute", "unmute", "mute-toggle", "state", "abort"):
         return _cmd_ctl(args.command)
     if args.command == "install-hotkeys":
         return _cmd_install_hotkeys()

@@ -50,6 +50,11 @@ class Daemon:
         self.state = State.IDLE
         self._stop = asyncio.Event()
 
+        # Desktop geometry (reported by the HUD process via GTK)
+        self.monitors: list[dict] = []
+        self.screen_size: tuple[int, int] | None = None
+        self.input = None  # lazy InputBackend
+
         # Audio (mic is the only eager component — everything else lazy, §9)
         self.mic = Mic()
         self.speaker = Speaker()
@@ -71,6 +76,12 @@ class Daemon:
         # IPC (HUD + control socket)
         self.hud = LineServer(HUD_SOCK)
         self.ctl = CtlServer(CTL_SOCK, on_command=self._handle_command)
+
+        # Safety guard (§10): abort + allowlist + audit — created BEFORE any
+        # input backend exists (spec hard constraint: abort path first).
+        from .safety.guard import SafetyGuard
+
+        self.guard = SafetyGuard(cfg.safety)
 
     # ---------------- lazy loaders ----------------
 
@@ -110,6 +121,16 @@ class Daemon:
             self._recorder = Recorder()
         return self._recorder
 
+    def _get_input(self):
+        """Lazy input backend using the HUD-reported desktop geometry."""
+        if self.input is None:
+            from .input.detect import detect_backend
+
+            w, h = self.screen_size or (1920, 1080)
+            self.input = detect_backend(w, h)
+            log.info("input backend ready: %s", type(self.input).__name__)
+        return self.input
+
     def _unload_heavy(self) -> None:
         """Idle timeout: free the REQUEST transcriber + piper (§9).
 
@@ -138,13 +159,26 @@ class Daemon:
             return {"ok": True, "muted": self._muted}
         if cmd == "state":
             return {"ok": True, "state": self.state.value, "muted": self._muted,
-                    "assistant": self.cfg.assistant.name}
+                    "assistant": self.cfg.assistant.name,
+                    "monitors": self.monitors, "screen": self.screen_size}
         if cmd == "abort":
-            # Full abort (hotkey-equivalent) lands in M4 with input injection;
-            # for now stop any busy request.
+            # §10: Ctrl+Alt+Q equivalent — kill any running loop instantly.
+            self.guard.request_abort("ctl")
             self._busy = False
             self.transition(State.IDLE)
+            pcm, sr = error_sound()
+            asyncio.create_task(asyncio.to_thread(self._play_and_wait, pcm, sr))
             return {"ok": True, "aborted": True}
+        if cmd == "set-geom":
+            # HUD reports the real monitor layout (GTK sees what the
+            # compositor sees) — used by input/vision for coordinate math.
+            self.monitors = msg.get("monitors", [])
+            if self.monitors:
+                w = max(m["x"] + m["w"] for m in self.monitors)
+                h = max(m["y"] + m["h"] for m in self.monitors)
+                self.screen_size = (w, h)
+            log.info("geometry: monitors=%s screen=%s", self.monitors, self.screen_size)
+            return {"ok": True}
         return {"ok": False, "error": f"unknown command {cmd!r}"}
 
     async def set_muted(self, muted: bool) -> None:

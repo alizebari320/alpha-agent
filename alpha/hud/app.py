@@ -133,8 +133,29 @@ class HUD:
         # compositor places the window (typically centered, which is fine).
 
         self.win.present()
+        self._report_geometry()
         self._start_sni()
         self._connect_socket()
+
+    def _report_geometry(self) -> None:
+        """Send the real monitor layout to the daemon (input/vision coords)."""
+        try:
+            mons = []
+            disp = self.win.get_display()
+            n = disp.get_monitors().get_n_items()
+            for i in range(n):
+                m = disp.get_monitors().get_item(i)
+                geo = m.get_geometry()
+                scale = m.get_scale_factor()
+                mons.append({
+                    "name": m.get_model() or f"mon{i}",
+                    "x": geo.x, "y": geo.y, "w": geo.width, "h": geo.height,
+                    "scale": scale,
+                })
+            self._ctl_raw({"cmd": "set-geom", "monitors": mons})
+            print("hud: geometry reported:", mons, flush=True)
+        except Exception as e:
+            print("hud: geometry report failed:", e, flush=True)
 
     def _pin_on_top(self) -> None:
         """Best-effort always-on-top (see module docstring)."""
@@ -234,11 +255,14 @@ class HUD:
         return False
 
     def _ctl(self, cmd: str) -> None:
+        self._ctl_raw({"cmd": cmd})
+
+    def _ctl_raw(self, msg: dict) -> None:
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(2)
             s.connect(CTL_PATH)
-            s.sendall(json.dumps({"cmd": cmd}).encode() + b"\n")
+            s.sendall(json.dumps(msg).encode() + b"\n")
             s.close()
         except OSError as e:
             print("hud: ctl send failed:", e, flush=True)

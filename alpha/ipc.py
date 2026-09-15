@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 HUD_SOCK = paths.STATE_DIR / "hud.sock"
 CTL_SOCK = paths.STATE_DIR / "ctl.sock"
-HUD_APP = Path(__file__).with_name("app.py")
+HUD_APP = Path(__file__).parent / "hud" / "app.py"
 
 # system python ships PyGObject; prefer it explicitly
 SYSTEM_PYTHONS = ["/usr/bin/python3", "/usr/bin/python3.12", "/usr/bin/python3.14"]
@@ -139,12 +139,15 @@ def spawn_hud() -> subprocess.Popen | None:
     env = dict(os.environ)
     env["ALPHA_HUD_SOCK"] = str(HUD_SOCK)
     env["ALPHA_CTL_SOCK"] = str(CTL_SOCK)
+    log_dir = paths.LOG_DIR
+    log_dir.mkdir(parents=True, exist_ok=True)
+    hud_log = open(log_dir / "hud.log", "ab", buffering=0)  # keep stderr for debugging
     try:
         proc = subprocess.Popen(
             [py, str(HUD_APP)],
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=hud_log,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
         log.info("HUD subprocess started (pid=%s)", proc.pid)
