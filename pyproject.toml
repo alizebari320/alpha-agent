@@ -1,0 +1,33 @@
+[project]
+name = "alpha-agent"
+version = "0.1.0"
+description = "Voice-driven computer-use agent for Fedora Linux. Offline wake word + STT/TTS, local planning, real desktop control."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "Ali Arif Muhammed" }]
+dependencies = [
+    "keyring>=25.2",
+    "httpx>=0.27",
+    "tomli-w>=1.0",
+]
+
+[project.scripts]
+alpha = "alpha.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["alpha"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

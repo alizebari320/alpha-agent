@@ -1,0 +1,91 @@
+# Alpha configuration example.
+#
+# Copy to ~/.config/alpha/config.toml (or run `alpha init` which does this for
+# you and imports your existing opencode credentials into the system keyring).
+#
+# Secrets are NEVER stored here — the API key lives in the system keyring
+# (libsecret), stored under the `api_key_keyring_user` name below.
+#
+# This file mirrors alpha/config.py 1:1. For a full reference see README.md.
+
+[assistant]
+# Drives: the wake word, the system prompt self-reference, the HUD title,
+# the spoken greeting. Bundled Tier-1 names: alpha, jarvis, computer,
+# assistant, mycroft.
+name = "alpha"
+language = "en"                       # HUD locale
+
+[assistant.wake_word]
+mode = "pretrained"                   # pretrained (bundled) | kws (any name, more CPU)
+phrase = "hey alpha"
+model = "hey_alpha"                   # must match a bundled model or a trained custom one
+threshold = 0.5
+refractory_s = 2.0
+
+[stt]
+model = "auto"                        # auto | tiny | base | small | medium (auto picks by RAM)
+language = "auto"                     # "auto" detects Arabic + English; or "en"/"ar"
+compute_type = "int8"
+
+[tts]
+voice = "en_US-lessac-medium"         # English piper voice
+arabic_voice = "ar_JO-kareem-medium"  # Arabic piper voice (downloaded on first use)
+volume = 1.0
+
+[llm.planner]
+provider = "agentrouter"
+model = "glm-5.3"
+base_url = "https://agentrouter.org/v1"
+
+# Some gateways (AgentRouter and friends) whitelist clients by User-Agent and
+# reject anything else with 401 "unauthorized client detected". `alpha init`
+# sets this automatically; only change it if you know your provider needs a
+# different value.
+user_agent = "opencode/1.18.30"
+api_key_keyring_user = "agentrouter"
+
+[llm.grounder]
+provider = "agentrouter"
+model = "glm-5.3"
+base_url = "https://agentrouter.org/v1"
+user_agent = "opencode/1.18.30"
+api_key_keyring_user = "agentrouter"
+
+[llm.summarizer]
+provider = "agentrouter"
+model = "glm-5.3"
+base_url = "https://agentrouter.org/v1"
+user_agent = "opencode/1.18.30"
+api_key_keyring_user = "agentrouter"
+
+# Fallback chain: tried in order when the primary returns 429/5xx/network error.
+# To add a provider, give it its own [[llm.fallbacks]] entry.
+[[llm.fallbacks]]
+provider = "agentrouter-anthropic"
+model = "claude-sonnet-4-5"
+base_url = "https://agentrouter.org"
+user_agent = "opencode/1.18.30"
+api_key_keyring_user = "agentrouter"
+
+max_steps = 25                        # planner/executor steps per request cap
+daily_spend_cap_usd = 5.0             # 0 to disable; on cap the loop refuses until reset
+per_request_step_cap = 25
+request_timeout_s = 120.0
+
+[vision]
+enabled = "auto"                      # auto detects if the model accepts images
+max_width = 1280                      # downscale screenshots to <= this width
+history_images = 3                    # screenshots kept in message history
+
+[safety]
+abort_hotkey = "ctrl+alt+q"           # kills any running loop instantly
+confirm_destructive = true            # spoken confirm before rm/dd/sudo/purchases/git push -f
+password_field_lock = true
+denylist = []                         # app names where Alpha refuses to act (e.g. "keepassxc")
+bash_allowlist = ["firefox", "google-chrome", "chromium", "nautilus",
+                  "gnome-control-center", "blender", "libreoffice", "gimp",
+                  "inkscape", "code", "xdg-open"]
+
+[resources]
+idle_unload_s = 120                   # unload Whisper/piper after this many idle seconds
+memory_max_mb = 1024                  # mirrored into the systemd MemoryMax

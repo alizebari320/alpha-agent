@@ -1,0 +1,14 @@
+# Alpha - local state, keys and models must never be committed
+/config.toml
+/.venv/
+/__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+/dist/
+/build/
+*.egg-info/
+
+# opencode credential dumps used during development
+/opencode-dump*/

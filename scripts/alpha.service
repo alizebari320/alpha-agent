@@ -1,0 +1,23 @@
+# Alpha — systemd user service
+# Installed to ~/.config/systemd/user/alpha.service by scripts/install-fedora.sh
+
+[Unit]
+Description=Alpha voice assistant (name/models from ~/.config/alpha/config.toml)
+Documentation=https://github.com/alizebari320/alpha-agent
+After=default.target
+
+[Service]
+Type=simple
+# ExecStart is rewritten by install-fedora.sh to point at the real venv binary.
+ExecStart=%h/alpha-agent/.venv/bin/alpha
+WorkingDirectory=%h/alpha-agent
+Restart=on-failure
+RestartSec=3
+
+# Resource budget (§9): deprioritize vs. the desktop, hard memory ceiling.
+Nice=5
+CPUWeight=60
+MemoryMax=1024M
+
+[Install]
+WantedBy=default.target
