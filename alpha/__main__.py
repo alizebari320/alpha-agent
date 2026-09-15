@@ -38,6 +38,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("state", help="query the running daemon's state")
     sub.add_parser("abort", help="ABORT: kill any running action loop instantly (§10)")
     sub.add_parser("install-hotkeys", help="register GNOME hotkeys: Ctrl+Alt+M mute, Ctrl+Alt+Q abort")
+
+    rec = sub.add_parser("recipes", help="manage learned deterministic macros")
+    rec.add_argument("action", choices=["list", "delete", "export", "import"])
+    rec.add_argument("arg", nargs="?", help="recipe id (or file for import/export)")
+    rec.add_argument("dest", nargs="?", help="destination file for export")
     return p
 
 
@@ -163,6 +168,45 @@ def _cmd_install_hotkeys() -> int:
     return 0
 
 
+def _cmd_recipes(action: str, arg: str | None, dest: str | None) -> int:
+    from alpha.brain.recipes import RecipeStore
+
+    store = RecipeStore()
+    if action == "list":
+        rs = store.all()
+        if not rs:
+            print("no recipes yet — they appear automatically after successful tasks")
+            return 0
+        for r in rs:
+            print(f"{r.id}  runs={r.runs:<3} {r.display_request[:60]!r} "
+                  f"({len(r.actions)} actions)")
+        return 0
+    if action == "delete":
+        if not arg or not store.delete(arg):
+            print(f"no recipe {arg!r}")
+            return 1
+        print("deleted")
+        return 0
+    if action == "export":
+        from pathlib import Path
+
+        out = store.export(arg, Path(dest or f"{arg}.json"))
+        if not out:
+            print(f"no recipe {arg!r}")
+            return 1
+        print(f"exported to {out}")
+        return 0
+    if action == "import":
+        from pathlib import Path
+
+        r = store.import_from(Path(arg))
+        if not r:
+            return 1
+        print(f"imported {r.id}: {r.display_request!r}")
+        return 0
+    return 1
+
+
 def _cmd_run() -> int:
     from .daemon import main_async
 
@@ -184,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_ctl(args.command)
     if args.command == "install-hotkeys":
         return _cmd_install_hotkeys()
+    if args.command == "recipes":
+        return _cmd_recipes(args.action, args.arg, args.dest)
     return _cmd_run()
 
 

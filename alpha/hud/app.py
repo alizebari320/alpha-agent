@@ -25,6 +25,10 @@ import socket
 import sys
 import threading
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from worker import ScreenCast, atspi_focused_tree  # noqa: E402
+
 SOCK_PATH = os.environ.get("ALPHA_HUD_SOCK", os.path.expanduser("~/.local/state/alpha/hud.sock"))
 CTL_PATH = os.environ.get("ALPHA_CTL_SOCK", os.path.expanduser("~/.local/state/alpha/ctl.sock"))
 
@@ -83,6 +87,7 @@ class HUD:
         self.muted = False
         self.state = "idle"
         self._sni = None
+        self._screencast = ScreenCast()
 
         self.app = Gtk.Application(application_id="org.alphaagent.Hud")
         self.app.connect("activate", self._activate)
@@ -252,7 +257,27 @@ class HUD:
         elif msg.get("type") == "mute":
             self.muted = bool(msg.get("muted"))
             self._apply(self.state, "", self.muted)
+        elif msg.get("type") == "req":
+            self._handle_request(msg)
         return False
+
+    def _handle_request(self, msg: dict) -> None:
+        """Run a worker op (possibly slow) in a thread, reply via ctl socket."""
+        op = msg.get("op")
+        rid = msg.get("id")
+
+        def run():
+            if op == "screen-init":
+                data = self._screencast.init()
+            elif op == "screenshot":
+                data = self._screencast.screenshot()
+            elif op == "atspi":
+                data = atspi_focused_tree()
+            else:
+                data = {"ok": False, "error": f"unknown op {op!r}"}
+            self._ctl_raw({"cmd": "res", "id": rid, **data})
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _ctl(self, cmd: str) -> None:
         self._ctl_raw({"cmd": cmd})

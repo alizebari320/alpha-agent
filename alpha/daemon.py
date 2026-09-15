@@ -72,6 +72,7 @@ class Daemon:
         self._kws_last_hit = 0.0
         self._busy = False
         self._muted = False
+        self._agent = None  # lazy AgentLoop (M6)
 
         # IPC (HUD + control socket)
         self.hud = LineServer(HUD_SOCK)
@@ -82,6 +83,16 @@ class Daemon:
         from .safety.guard import SafetyGuard
 
         self.guard = SafetyGuard(cfg.safety)
+
+        # Vision worker (M5): talks to the HUD subprocess for
+        # screenshots/AT-SPI; Pillow downscale/SoM locally.
+        from .vision import DesktopWorker, Vision
+
+        self.worker = DesktopWorker()
+        self.worker.attach(self)
+        self.vision = Vision(self.worker, self,
+                             password_lock=cfg.safety.password_field_lock,
+                             max_width=cfg.vision.max_width)
 
     # ---------------- lazy loaders ----------------
 
@@ -169,6 +180,17 @@ class Daemon:
             pcm, sr = error_sound()
             asyncio.create_task(asyncio.to_thread(self._play_and_wait, pcm, sr))
             return {"ok": True, "aborted": True}
+        if cmd == "res":
+            # vision worker reply (correlated by id)
+            self.worker.resolve(msg)
+            return None  # no reply needed on ctl
+        if cmd == "vision-test":
+            # manual M5 check: screenshot + atspi + password lock
+            shot = await self.vision.screenshot()
+            els = await self.vision.atspi()
+            locked = await self.vision.check_password_lock(els)
+            return {"ok": bool(shot), "shot": f"{shot.width}x{shot.height}" if shot else None,
+                    "atspi_elements": len(els), "password_locked": locked}
         if cmd == "set-geom":
             # HUD reports the real monitor layout (GTK sees what the
             # compositor sees) — used by input/vision for coordinate math.
@@ -326,10 +348,33 @@ class Daemon:
                 await self._say_error("Sorry, I couldn't understand that.")
                 return
 
-            # 3) M2 acceptance: echo the transcript back.
+            # strip a leading wake phrase if the user said it in one breath
+            ww = self.cfg.assistant.wake_word.phrase.lower()
+            if text.lower().startswith(ww):
+                text = text[len(ww):].strip(" ,.-")
+
+            # 3) plan + act + answer (M6 agent loop; abort-checked inside)
+            from .safety.guard import AbortRequested
+
+            # A new request begins: clear any stale abort from the previous one
+            # (aborts during idle apply to nothing; §10 semantics).
+            self.guard.clear_abort()
+            try:
+                self.transition(State.ACTING)
+                self._hud_state(text[:80])
+                answer = await self._get_agent().run(text)
+            except AbortRequested:
+                self.transition(State.IDLE)
+                await self.speak("Aborted.")
+                return
+            except Exception as e:
+                log.exception("agent loop failed")
+                # §11.5: spoken message, never a stack trace
+                answer = self._friendly_error(e)
+
             self.transition(State.SPEAKING)
-            self._hud_state(text)
-            await asyncio.to_thread(self._say, text)
+            self._hud_state(answer[:120])
+            await asyncio.to_thread(self._say, answer)
             pcm, sr = done_sound()
             await asyncio.to_thread(self._play_and_wait, pcm, sr)
         finally:
@@ -347,6 +392,41 @@ class Daemon:
             self._get_tts().say(text)
         except Exception as e:
             log.error("TTS failed: %s", e)
+
+    # async speak (used by the agent loop + confirmations)
+    async def speak(self, text: str) -> None:
+        await asyncio.to_thread(self._say, text)
+
+    async def record_request(self):
+        return await asyncio.to_thread(
+            self._get_recorder().record_utterance, self.mic.ring)
+
+    async def transcribe(self, pcm) -> str:
+        return await asyncio.to_thread(self._get_stt().transcribe, pcm)
+
+    def _get_agent(self):
+        if self._agent is None:
+            from .brain.loop import AgentLoop
+
+            self._agent = AgentLoop(self)
+        return self._agent
+
+    def _friendly_error(self, e: Exception) -> str:
+        """§11.5: map failure classes to SPOKEN messages, never stack traces."""
+        import httpx
+
+        msg = str(e).lower()
+        if isinstance(e, httpx.ConnectError) or "connection" in msg or "network" in msg:
+            return "I can't reach my model provider — the internet seems down."
+        if "401" in msg or "unauthorized" in msg or "invalid" in msg and "key" in msg:
+            return "My API key was rejected. Please re-run alpha init."
+        if "429" in msg or "rate" in msg:
+            return "The model provider is rate limiting me. Try again in a minute."
+        if "502" in msg or "503" in msg or "504" in msg or "timeout" in msg:
+            return "The model provider is having an outage. Try again shortly."
+        if "not installed" in msg or "no such file" in msg or "command not found" in msg:
+            return "That application isn't installed."
+        return "Something went wrong on my side — check the logs for details."
 
     async def _say_error(self, msg: str) -> None:
         pcm, sr = error_sound()

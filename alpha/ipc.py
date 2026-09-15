@@ -103,13 +103,13 @@ class LineServer:
 CtlServer = LineServer
 
 
-async def ctl_client(cmd: str, sock_path: Path | None = None) -> dict:
+async def ctl_client(cmd: str, sock_path: Path | None = None, timeout: float = 3.0) -> dict:
     """Send one command to a running daemon; return its reply (or error)."""
     import socket as _socket
 
     sock_path = sock_path or CTL_SOCK
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    s.settimeout(3.0)
+    s.settimeout(timeout)
     try:
         s.connect(str(sock_path))
         s.sendall(json.dumps({"cmd": cmd}).encode() + b"\n")
