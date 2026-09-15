@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from pathlib import Path
 
 from . import __version__, paths
 from .log import configure_logging, redact
@@ -30,6 +31,12 @@ def _build_parser() -> argparse.ArgumentParser:
     d.add_argument("--no-network", action="store_true", help="skip the API reachability check")
 
     sub.add_parser("init", help="first-run wizard (import credentials, set name)")
+
+    m = sub.add_parser("mute", help="mute the running daemon (releases the mic)")
+    sub.add_parser("unmute", help="unmute the running daemon")
+    sub.add_parser("mute-toggle", help="toggle mute on the running daemon")
+    sub.add_parser("state", help="query the running daemon's state")
+    sub.add_parser("install-hotkeys", help="register GNOME/Wayland mute hotkey (Ctrl+Alt+M)")
     return p
 
 
@@ -84,6 +91,60 @@ def _cmd_doctor(network: bool) -> int:
     return doctor_main(cfg, network=network)
 
 
+def _cmd_ctl(cmd: str) -> int:
+    import asyncio
+
+    from .ipc import ctl_client
+
+    async def run():
+        return await ctl_client(cmd)
+
+    reply = asyncio.run(run())
+    if not reply.get("ok"):
+        print(f"error: {reply.get('error', 'daemon not reachable')}")
+        return 1
+    if cmd == "state":
+        print(f"state={reply.get('state')} muted={reply.get('muted')} "
+              f"assistant={reply.get('assistant')}")
+    else:
+        print(f"muted={reply.get('muted')}")
+    return 0
+
+
+def _cmd_install_hotkeys() -> int:
+    """Register a GNOME custom keybinding: Ctrl+Alt+M -> alpha mute-toggle.
+
+    On GNOME Wayland apps cannot grab global keys; the supported mechanism is
+    a session keybinding running a command. This is user-level gsettings —
+    no root needed, reversible via Settings > Keyboard > Custom Shortcuts.
+    """
+    import subprocess
+
+    base = "org.gnome.settings-daemon.plugins.media-keys"
+    def gs(*args):
+        return subprocess.run(["gsettings", *args], capture_output=True, text=True)
+
+    if gs("get", base, "custom-keybindings").returncode != 0:
+        print("gsettings/GNOME not available — on X11 the daemon grabs keys directly.")
+        return 1
+
+    path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/alpha-mute/"
+    cur = gs("get", base, "custom-keybindings").stdout.strip()
+    if path not in cur:
+        new = cur[:-1] + (", " if cur.endswith("]") and cur != "@as []" else "") + f"'{path}']"
+        if cur == "@as []" or cur == "@as []\n":
+            new = f"['{path}']"
+        gs("set", base, "custom-keybindings", new)
+    kb = base + ".custom-keybinding:" + path
+    gs("set", kb, "name", "Alpha mute")
+    # The venv python can run the installed package from any cwd.
+    gs("set", kb, "command", f"{sys.executable} -m alpha mute-toggle")
+    gs("set", kb, "binding", "<Primary><Alt>m")
+    print("Registered Ctrl+Alt+M -> 'alpha mute-toggle' (GNOME custom keybinding).")
+    print("Remove anytime in Settings > Keyboard > View and Customize Shortcuts.")
+    return 0
+
+
 def _cmd_run() -> int:
     from .daemon import main_async
 
@@ -101,6 +162,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(not args.no_network)
     if args.command == "init":
         return _cmd_init()
+    if args.command in ("mute", "unmute", "mute-toggle", "state"):
+        return _cmd_ctl(args.command)
+    if args.command == "install-hotkeys":
+        return _cmd_install_hotkeys()
     return _cmd_run()
 
 

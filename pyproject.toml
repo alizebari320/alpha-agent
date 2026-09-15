@@ -22,7 +22,11 @@ dependencies = [
 alpha = "alpha.__main__:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "ruff>=0.6"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]

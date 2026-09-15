@@ -23,8 +23,9 @@ from enum import Enum
 
 import numpy as np
 
-from .audio import FRAME_SAMPLES, Mic, Speaker, ack_sound, error_sound
+from .audio import FRAME_SAMPLES, Mic, Speaker, ack_sound, error_sound, done_sound
 from .config import Config, load_config
+from .ipc import CTL_SOCK, HUD_SOCK, CtlServer, LineServer, spawn_hud
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,11 @@ class Daemon:
         self._kws_since_check = 0.0
         self._kws_last_hit = 0.0
         self._busy = False
+        self._muted = False
+
+        # IPC (HUD + control socket)
+        self.hud = LineServer(HUD_SOCK)
+        self.ctl = CtlServer(CTL_SOCK, on_command=self._handle_command)
 
     # ---------------- lazy loaders ----------------
 
@@ -117,12 +123,60 @@ class Daemon:
             self._tts = None
         log.info("idle unload: freed whisper/piper (wake matcher stays resident)")
 
+    # ---------------- mute (§10: the mic is genuinely RELEASED) ------------
+
+    async def _handle_command(self, msg: dict) -> dict | None:
+        cmd = msg.get("cmd")
+        if cmd == "mute-toggle":
+            await self.set_muted(not self._muted)
+            return {"ok": True, "muted": self._muted}
+        if cmd == "mute":
+            await self.set_muted(True)
+            return {"ok": True, "muted": self._muted}
+        if cmd == "unmute":
+            await self.set_muted(False)
+            return {"ok": True, "muted": self._muted}
+        if cmd == "state":
+            return {"ok": True, "state": self.state.value, "muted": self._muted,
+                    "assistant": self.cfg.assistant.name}
+        if cmd == "abort":
+            # Full abort (hotkey-equivalent) lands in M4 with input injection;
+            # for now stop any busy request.
+            self._busy = False
+            self.transition(State.IDLE)
+            return {"ok": True, "aborted": True}
+        return {"ok": False, "error": f"unknown command {cmd!r}"}
+
+    async def set_muted(self, muted: bool) -> None:
+        self._muted = muted
+        if muted:
+            self.mic.stop(release_device=True)  # genuinely release the h/w mic
+            self.transition(State.MUTED)
+        else:
+            self.mic.start()
+            self.transition(State.IDLE)
+        self.hud.broadcast({"type": "mute", "muted": muted})
+        log.info("muted=%s (mic %s)", muted, "released" if muted else "open")
+
+    # ---------------- HUD ----------------
+
+    def _hud_state(self, text: str = "") -> None:
+        self.hud.broadcast({"type": "state", "state": self.state.value, "text": text})
+
+    def transition(self, new: State) -> None:
+        log.info("state %s -> %s", self.state.value, new.value)
+        self.state = new
+        self._hud_state("")
+
     # ---------------- main loop ----------------
 
     async def run(self) -> None:
         log.info("alpha-agent daemon starting (assistant=%r, state=%s)",
                  self.cfg.assistant.name, self.state.value)
         self._install_signal_handlers()
+        await self.hud.start()
+        await self.ctl.start()
+        self._hud_proc = spawn_hud()
         self.mic.start()
         log.info("wake word mode=%s phrase=%r — listening",
                  self.cfg.assistant.wake_word.mode, self.cfg.assistant.wake_word.phrase)
@@ -132,6 +186,11 @@ class Daemon:
             log.info("alpha-agent daemon stopping (state=%s)", self.state.value)
             self.speaker.stop()
             self.mic.stop(release_device=True)
+            if getattr(self, "_hud_proc", None):
+                try:
+                    self._hud_proc.terminate()
+                except Exception:
+                    pass
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -145,7 +204,7 @@ class Daemon:
         from .wake import KWSWake
 
         while not self._stop.is_set():
-            if self._busy:
+            if self._busy or self._muted:
                 await asyncio.sleep(0.05)
                 continue
 
@@ -206,6 +265,7 @@ class Daemon:
         self._last_busy = time.time()
         try:
             self.transition(State.LISTENING)
+            self._hud_state("Listening…")
 
             pcm, sr = ack_sound()
             await asyncio.to_thread(self._play_and_wait, pcm, sr)
@@ -225,6 +285,7 @@ class Daemon:
 
             # 2) transcribe
             self.transition(State.THINKING)
+            self._hud_state(text or "…")
             text = await asyncio.to_thread(self._get_stt().transcribe, request)
             log.info("request transcript: %r", text)
             if not text:
@@ -233,7 +294,10 @@ class Daemon:
 
             # 3) M2 acceptance: echo the transcript back.
             self.transition(State.SPEAKING)
+            self._hud_state(text)
             await asyncio.to_thread(self._say, text)
+            pcm, sr = done_sound()
+            await asyncio.to_thread(self._play_and_wait, pcm, sr)
         finally:
             self.transition(State.IDLE)
             self.mic.clear()
@@ -254,6 +318,7 @@ class Daemon:
         pcm, sr = error_sound()
         await asyncio.to_thread(self._play_and_wait, pcm, sr)
         await asyncio.to_thread(self._say, msg)
+        self._hud_state(msg)
 
 
 async def main_async() -> int:
