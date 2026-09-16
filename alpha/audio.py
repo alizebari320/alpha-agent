@@ -8,11 +8,8 @@ amount of audio (§9: never accumulate unbounded audio).
 from __future__ import annotations
 
 import logging
-import math
-import struct
 import threading
 import wave
-from collections import deque
 from pathlib import Path
 
 import numpy as np

@@ -113,7 +113,7 @@ class KWSWake:
         phrase_words = self.phrase.split()
         # 2) sliding-window fuzzy over word n-grams
         for n in range(max(1, len(phrase_words) - 1), len(phrase_words) + 2):
-            for i in range(0, max(1, len(words) - n + 1)):
+            for i in range(max(1, len(words) - n + 1)):
                 window = " ".join(words[i: i + n])
                 ratio = difflib.SequenceMatcher(None, self.phrase, window).ratio()
                 if ratio >= self.threshold:

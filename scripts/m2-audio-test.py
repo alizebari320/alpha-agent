@@ -21,9 +21,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from alpha import models  # noqa: E402
-from alpha.stt import Transcriber  # noqa: E402
-from alpha.wake import KWSWake  # noqa: E402
+from alpha import models
+from alpha.stt import Transcriber
+from alpha.wake import KWSWake
 
 PASS, FAIL = "\033[32mPASS\033[0m", "\033[31mFAIL\033[0m"
 failures = 0

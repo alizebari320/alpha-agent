@@ -40,7 +40,7 @@ volume = 1.0
 
 [llm.planner]
 provider = "agentrouter"
-model = "glm-5.3"
+model = "deepseek-v4-flash"
 base_url = "https://agentrouter.org/v1"
 
 # Some gateways (AgentRouter and friends) whitelist clients by User-Agent and
@@ -52,14 +52,14 @@ api_key_keyring_user = "agentrouter"
 
 [llm.grounder]
 provider = "agentrouter"
-model = "glm-5.3"
+model = "deepseek-v4-flash"
 base_url = "https://agentrouter.org/v1"
 user_agent = "opencode/1.18.30"
 api_key_keyring_user = "agentrouter"
 
 [llm.summarizer]
 provider = "agentrouter"
-model = "glm-5.3"
+model = "deepseek-v4-flash"
 base_url = "https://agentrouter.org/v1"
 user_agent = "opencode/1.18.30"
 api_key_keyring_user = "agentrouter"

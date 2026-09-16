@@ -151,7 +151,7 @@ class ScreenCast:
 
         gi.require_version("Gst", "1.0")
         gi.require_version("GstApp", "1.0")
-        from gi.repository import Gst, GstApp
+        from gi.repository import Gst
 
         Gst.init(None)
         self._fd = fd  # keep the OS fd open for the lifetime of the pipeline

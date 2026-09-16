@@ -11,7 +11,8 @@ from __future__ import annotations
 
 def system_prompt(assistant_name: str, screen_size: tuple[int, int],
                   shot_size: tuple[int, int] | None, monitor: dict,
-                  session_type: str, vision: bool) -> str:
+                  session_type: str, vision: bool,
+                  screen_share_ok: bool = True) -> str:
     w, h = screen_size
     shot = f"{shot_size[0]}x{shot_size[1]}" if shot_size else f"{w}x{h} (native)"
     vision_txt = (
@@ -23,6 +24,20 @@ def system_prompt(assistant_name: str, screen_size: tuple[int, int],
         "(text-only grounding). Use click_element(label) — never raw pixel "
         "guesses. Coordinates, if ever needed, are in SCREEN pixels."
     )
+    blind_txt = ""
+    if not vision:
+        blind_txt = (
+            "\n- NO MODEL VISION on this provider: you cannot see pixels, only the element "
+            "table. Rely on bash() checks (pgrep, wmctrl -l) and keyboard shortcuts, and "
+            "verify with the element table after each action."
+        )
+    if not screen_share_ok:
+        blind_txt += (
+            "\n- The desktop screenshot is UNAVAILABLE because the user has not granted "
+            "screen-sharing yet. Do not try to fix this yourself. If the request truly "
+            "needs seeing the screen, finish() asking the user to click 'Share' in the "
+            "Alpha HUD (the button on the overlay)."
+        )
     return f"""You are {assistant_name.capitalize()}, a voice assistant executing ONE spoken request on the user's real Linux desktop. You act via tools.
 
 ENVIRONMENT
@@ -35,10 +50,12 @@ GROUNDING
 
 RULES
 - PREFER keyboard shortcuts over clicking: key("ctrl+l") for the browser URL bar, key("ctrl+t") new tab, key("alt+Tab") switch apps. NEVER click a menu when a shortcut exists.
+- The app must be FOCUSED before you type into it. After launching or switching, verify with bash("wmctrl -l 2>/dev/null; xdotool getactivewindow getwindowname") and focus it with key("alt+Tab") if needed.
 - PREFER launching apps with bash() over clicking menus: bash("firefox"), bash("xdg-open URL").
+- NEVER launch an app that is already running: check first with bash("pgrep -x firefox"). Right after launching, the app may take several seconds to appear — use wait() and check again instead of launching it a second time.
 - PREFER click_element(label) from the element table over raw coordinates.
 - After each action, you will see the updated state. Verify before continuing. If three consecutive actions change nothing, finish("I'm stuck, can you help me?").
-- Keep the plan minimal: fewest actions that complete the request.
+- Keep the plan minimal: fewest actions that complete the request.{blind_txt}
 - ALWAYS end by calling finish(answer) with 1-2 short sentences suitable for SPEAKING out loud. No markdown, no lists, no code. Never mention 'tools' or 'coordinates' in the answer.
 - If the request is a question or needs no desktop action, just finish() with the answer.
 - If something fails (app missing, page not loading), finish() honestly saying what failed."""

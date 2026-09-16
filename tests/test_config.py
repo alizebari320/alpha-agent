@@ -4,7 +4,7 @@ import tomllib
 
 import pytest
 
-from alpha.config import Config, ConfigError, parse_config
+from alpha.config import ConfigError, parse_config
 from alpha.wake import BUNDLED_WAKEWORDS
 
 

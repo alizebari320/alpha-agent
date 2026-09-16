@@ -1,10 +1,16 @@
 """M5 tests: coordinate scaling (spec: #1 failure mode), SoM, password lock."""
 
-import pytest
 
-from alpha.vision import (AtspiElement, downscale_size, model_to_screen,
-                          screen_to_model, clip_to_monitor, som_label,
-                          som_table_text, draw_som_png, PasswordFieldLocked)
+from alpha.vision import (
+    AtspiElement,
+    clip_to_monitor,
+    downscale_size,
+    draw_som_png,
+    model_to_screen,
+    screen_to_model,
+    som_label,
+    som_table_text,
+)
 
 MON = {"name": "eDP-1", "x": 0, "y": 0, "w": 1920, "h": 1080, "scale": 1}
 MON2 = {"name": "HDMI", "x": 1920, "y": 0, "w": 2560, "h": 1440, "scale": 1}
@@ -58,7 +64,7 @@ def _els():
 
 def test_som_label_picks_clickables_excludes_password():
     labels, label_map = som_label(_els(), 1280, 720, MON)
-    descs = " ".join(l["desc"] for l in labels)
+    descs = " ".join(lbl["desc"] for lbl in labels)
     assert "Search" in descs and "AI website" in descs
     assert "password" not in descs.lower()  # never offered
     # label 1 center = (140,215) screen -> model (93.3, 143.3)
@@ -71,7 +77,7 @@ def test_som_table_text():
     labels, _ = som_label(_els(), 1280, 720, MON)
     table = som_table_text(labels)
     assert table.startswith("1: ")
-    assert all(l["desc"].split(":")[0] for l in labels)
+    assert all(lbl["desc"].split(":")[0] for lbl in labels)
 
 
 def test_draw_som_png_noop_on_plain_b64():

@@ -30,6 +30,59 @@ DESTRUCTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Read-only inspection commands the agent needs to VERIFY its own work. Without
+# these, every `pgrep`/`wmctrl -l` would trigger a spoken confirmation and the
+# loop would be unusable (verified: the first Firefox run stalled on one).
+READONLY_BASES = {
+    "ps", "pgrep", "pidof", "ls", "lsblk", "cat", "head", "tail", "grep", "rg",
+    "wc", "which", "echo", "date", "uname", "id", "whoami", "hostname", "uptime",
+    "free", "df", "du", "stat", "file", "nproc", "printenv", "getent", "sleep",
+    "test", "true", "false", "command", "env", "readlink", "realpath", "basename",
+    "dirname", "sort", "uniq", "cut", "tr", "awk", "sed", "notify-send",
+}
+
+# Only certain subcommands of these tools are read-only (`xdotool key` injects
+# input, `gsettings set` changes config — those still need confirmation).
+READONLY_SUBCOMMANDS = {
+    "xdotool": {"search", "getactivewindow", "getwindowname", "getmouselocation",
+                "getwindowgeometry", "getdisplaygeometry", "getwindowpid"},
+    "wmctrl": {"-l", "-d", "-m"},
+    "gsettings": {"get", "range", "list-schemas", "list-keys", "list-recursively"},
+    "systemctl": {"status", "is-active", "is-enabled", "list-units", "show", "--user"},
+    "pactl": {"info", "list"},
+    "blender": {"--version", "-v"},
+    "ffmpeg": {"-version"},
+}
+
+_REDIRECT_RE = re.compile(r"\d?>>?\s*(?:/dev/null|&\d|&-)|" + r"\d?>&\d|2>&1")
+
+# Writing to a real file is never read-only: `echo x > ~/.bashrc` must be
+# confirmed even though `echo` itself is harmless. (/dev/null is stripped
+# above, so anything left here is a genuine file write.)
+_WRITE_REDIRECT_RE = re.compile(r">>?\s*(?!/dev/null)[^\s&]")
+
+
+def _bash_segments(cmd: str) -> list[str]:
+    """Split a compound shell command into its individual segments."""
+    cleaned = _REDIRECT_RE.sub(" ", cmd)
+    return [s.strip() for s in re.split(r"\|\||&&|;|\||\n", cleaned) if s.strip()]
+
+
+def _segment_is_safe(segment: str, allowlist: list[str]) -> bool:
+    """True when one command segment is read-only or an allowlisted app."""
+    if _WRITE_REDIRECT_RE.search(segment):
+        return False  # redirecting output to a real file is a write
+    tokens = segment.split()
+    if not tokens:
+        return True
+    base = tokens[0].rsplit("/", 1)[-1]
+    if base in READONLY_BASES:
+        return True
+    if base in READONLY_SUBCOMMANDS:
+        allowed = READONLY_SUBCOMMANDS[base]
+        return any(t in allowed for t in tokens[1:])
+    return base in {a.split()[0] for a in allowlist}
+
 
 class AbortRequested(Exception):
     """Raised inside the action loop when abort fires."""
@@ -91,8 +144,10 @@ class SafetyGuard:
             cmd = str(args.get("command", ""))
             if DESTRUCTIVE_RE.search(cmd):
                 return False, "destructive command — confirmation required"
-            base = cmd.strip().split()[0] if cmd.strip() else ""
-            if base in {a.split()[0] for a in self.cfg.bash_allowlist}:
+            # Compound commands are allowed only if EVERY segment is safe, so
+            # `pgrep -a firefox | head -5` works while `ls; rm -rf /` never does.
+            segments = _bash_segments(cmd)
+            if segments and all(_segment_is_safe(s, self.cfg.bash_allowlist) for s in segments):
                 return True, "allowlisted"
             return False, "command not in allowlist — confirmation required"
         if tool == "type_text" and args.get("_password_field"):

@@ -25,7 +25,7 @@ def _download(url: str, dest: Path, desc: str = "") -> None:
     tmp = dest.with_suffix(dest.suffix + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
-    with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 (https only, below)
+    with urllib.request.urlopen(req, timeout=60) as r:
         if not url.startswith("https://"):
             raise ValueError(f"refusing non-https URL: {url}")
         total = int(r.headers.get("Content-Length") or 0)
@@ -93,7 +93,7 @@ def pick_whisper_model(default: str = "auto") -> str:
         return default
     try:
         total_kb = int(
-            next(l for l in open("/proc/meminfo") if l.startswith("MemTotal")).split()[1]
+            next(ln for ln in open("/proc/meminfo") if ln.startswith("MemTotal")).split()[1]
         )
         total_gb = total_kb / (2**20)
         return "small" if total_gb >= 8 else "tiny.en"

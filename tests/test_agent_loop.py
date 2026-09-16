@@ -141,7 +141,6 @@ def test_finish_directly():
 
 def test_click_element_dispatch():
     """Executor clicks by SoM label -> converts to screen coords."""
-    from alpha.vision import AtspiElement
 
     responses = [
         "1. click the search box\n2. type the query",
@@ -214,7 +213,7 @@ def test_cost_guard_cap(tmp_path):
     loop.cost = CostGuard(loop.cfg)
     loop.cost.path = tmp_path / "spend.jsonl"
     # simulate already at cap
-    loop.cost._today[loop.cost._today and "1970-01-01" or "x"] = 0  # noqa
+    loop.cost._today[(loop.cost._today and "1970-01-01") or "x"] = 0
     loop.cost.spent_today = lambda: 999.0
     answer = asyncio.run(loop.run("anything"))
     assert "spending cap" in answer
@@ -233,9 +232,9 @@ def test_cost_guard_logging(tmp_path):
 def test_recipe_saved_on_success(tmp_path, monkeypatch):
     """A successful run stores its action sequence as a deterministic macro."""
     import alpha.brain.recipes as recipes_mod
+    import alpha.paths as paths_mod
 
-    monkeypatch.setattr(paths_mod := __import__("alpha.paths", fromlist=["x"]),
-                         "RECIPE_DIR", tmp_path)
+    monkeypatch.setattr(paths_mod, "RECIPE_DIR", tmp_path)
     recipes_mod.paths.RECIPE_DIR = tmp_path
     responses = [
         "1. open firefox",
@@ -250,7 +249,6 @@ def test_recipe_saved_on_success(tmp_path, monkeypatch):
                         lambda *a, **k: executed.append(a) or type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
     answer = asyncio.run(loop.run("open firefox please"))
     assert answer == "Opened."
-    assert not executed or True  # bash path was mocked
     store = recipes_mod.RecipeStore(root=tmp_path)
     rs = store.all()
     assert len(rs) == 1, "recipe should have been saved"

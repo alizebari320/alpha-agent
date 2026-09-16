@@ -8,24 +8,64 @@ abort flag is checked between every tool call (§10).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import subprocess
 import logging
+import os
+import subprocess
 import time
 from dataclasses import dataclass
 
 from .. import paths
 from ..safety.guard import AbortRequested
-from .prompts import executor_step_prompt, system_prompt
-from .tools import tool_schemas
+from .prompts import system_prompt
 from .providers.openai_compatible import FallbackChain, OpenAICompatibleProvider
+from .tools import tool_schemas
 
 log = logging.getLogger(__name__)
 
 MAX_STEPS = 25
 MAX_ACTIONS_PER_STEP = 6
 NO_CHANGE_LIMIT = 3
+# GUI apps never exit on their own: `bash firefox` would block the tool until
+# its timeout and then look like a failure. These are launched detached.
+GUI_LAUNCHERS = {
+    "firefox", "firefox-esr", "google-chrome", "google-chrome-stable", "chromium",
+    "chromium-browser", "nautilus", "gnome-control-center", "gnome-text-editor",
+    "blender", "libreoffice", "soffice", "gimp", "inkscape", "code", "xdg-open",
+    "gnome-calculator", "evince", "eog", "totem", "gnome-system-monitor",
+}
+
+
+def _run_bash(command: str, timeout: float = 30.0) -> str:
+    """Run a shell command for the agent.
+
+    GUI launchers are started detached and reported immediately — otherwise a
+    perfectly good `firefox` launch is misreported as a 30s timeout failure.
+    """
+    base = os.path.basename(command.strip().split()[0]) if command.strip() else ""
+    is_gui = base in GUI_LAUNCHERS
+    if is_gui:
+        try:
+            p = subprocess.Popen(
+                command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, start_new_session=True,
+            )
+            time.sleep(1.5)  # let it map a window before the next observation
+            alive = p.poll() is None
+            return (f"launched in background (pid={p.pid}, running={alive})"
+                    if alive else f"process exited immediately (exit={p.returncode})")
+        except Exception as e:  # noqa: BLE001
+            return f"failed to launch: {e}"
+    try:
+        r = subprocess.run(command, shell=True, capture_output=True, text=True,
+                           timeout=timeout)
+        return f"exit={r.returncode} " + (r.stdout or r.stderr or "")[:300]
+    except subprocess.TimeoutExpired:
+        return f"timed out after {timeout:.0f}s (command may still be running)"
+    except Exception as e:  # noqa: BLE001
+        return f"failed: {e}"
 
 
 @dataclass
@@ -188,9 +228,7 @@ class AgentLoop:
                 ok = await self._confirm_spoken(f"Should I run the command {command}?")
                 if not ok:
                     return "user declined; do not retry this command"
-            r = subprocess.run(command, shell=True, capture_output=True,
-                               text=True, timeout=30)
-            result = f"exit={r.returncode} " + (r.stdout or r.stderr)[:300]
+            result = await asyncio.to_thread(_run_bash, command)
         elif name == "wait":
             import asyncio
 
@@ -257,7 +295,8 @@ class AgentLoop:
         obs = await self._observe()
         sysp = system_prompt(daemon.cfg.assistant.name,
                              daemon.screen_size or (mon["w"], mon["h"]),
-                             obs.shot_size, mon, "wayland", vision)
+                             obs.shot_size, mon, "wayland", vision,
+                             screen_share_ok=bool(obs.png_b64))
 
         # ---------------- PLANNER ----------------
         plan_messages = [

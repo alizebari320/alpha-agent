@@ -20,11 +20,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-
-from . import paths
 
 log = logging.getLogger(__name__)
 
@@ -223,8 +220,7 @@ def import_provider_into_config(provider: Provider, config_path: Path) -> None:
     store_key(provider.id, provider.api_key)
     # Reuse config.py defaults for everything else; we only pin the planner role.
     try:
-        from .config import LLMRole, load_config
-        from .config import parse_config
+        from .config import load_config, parse_config
 
         # Load existing config if present, else start from defaults.
         if config_path.exists():
@@ -260,9 +256,9 @@ def import_provider_into_config(provider: Provider, config_path: Path) -> None:
 
 def write_config(cfg, config_path: Path) -> None:
     """Serialize a Config object to TOML (small, hand-rolled serializer)."""
-    from .config import (Config, LLMRole, SafetyConfig, STTConfig, TTSConfig,
-                         VisionConfig, WakeWordConfig, AssistantConfig, LLMConfig,
-                         ResourceConfig)
+    from .config import (
+        LLMRole,
+    )
 
     def role(r: LLMRole) -> dict:
         return {

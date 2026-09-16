@@ -27,7 +27,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worker import ScreenCast, atspi_focused_tree  # noqa: E402
+from worker import ScreenCast, atspi_focused_tree
 
 SOCK_PATH = os.environ.get("ALPHA_HUD_SOCK", os.path.expanduser("~/.local/state/alpha/hud.sock"))
 CTL_PATH = os.environ.get("ALPHA_CTL_SOCK", os.path.expanduser("~/.local/state/alpha/ctl.sock"))
@@ -80,7 +80,7 @@ class HUD:
 
         gi.require_version("Gtk", "4.0")
         gi.require_version("Gdk", "4.0")
-        from gi.repository import Gdk, Gio, GLib, Gtk
+        from gi.repository import GLib, Gtk
 
         self.gtk = Gtk
         self.glib = GLib

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from alpha.credentials import Provider, discover_opencode
+from alpha.credentials import discover_opencode
 
 
 @pytest.fixture

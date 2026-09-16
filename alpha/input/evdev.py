@@ -7,7 +7,6 @@ include/uapi/linux/uinput.h, which are frozen ABI.
 
 from __future__ import annotations
 
-import fcntl
 import struct
 
 # event types
@@ -46,8 +45,13 @@ UI_SET_EVBIT = _IOC(_IOC_WRITE, ord("U"), 100, 4)
 UI_SET_KEYBIT = _IOC(_IOC_WRITE, ord("U"), 101, 4)
 UI_SET_RELBIT = _IOC(_IOC_WRITE, ord("U"), 102, 4)
 UI_SET_ABSBIT = _IOC(_IOC_WRITE, ord("U"), 103, 4)
+UI_SET_PROPBIT = _IOC(_IOC_WRITE, ord("U"), 110, 4)
 UI_DEV_CREATE = _IOC(_IOC_NONE, ord("U"), 1, 0)
 UI_DEV_DESTROY = _IOC(_IOC_NONE, ord("U"), 2, 0)
+
+# input properties (include/uapi/linux/input.h)
+INPUT_PROP_POINTER = 0x00
+INPUT_PROP_DIRECT = 0x01
 
 ABS_CNT = 64
 
@@ -130,9 +134,45 @@ _SHIFT_CHARS = set("!@#$%^&*()_+{}|:\"<>?~")
 BUTTONS = {"left": BTN_LEFT, "right": BTN_RIGHT, "middle": BTN_MIDDLE}
 
 
+# Case-insensitive aliases for key NAMES (as opposed to characters).
+_KEY_ALIASES: dict[str, str] = {
+    "esc": "Escape", "escape": "Escape",
+    "ret": "Return", "cr": "Return", "kp_enter": "Return",
+    "pgup": "Page_Up", "pgdn": "Page_Down",
+    "pageup": "Page_Up", "pagedown": "Page_Down",
+    "del": "Delete", "bsp": "BackSpace", "bksp": "BackSpace",
+    "spc": "space", "tab": "Tab",
+    "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+    "home": "Home", "end": "End", "insert": "Insert",
+    "enter": "Return", "return": "Return", "backspace": "BackSpace",
+    "capslock": "Caps_Lock", "caps_lock": "Caps_Lock",
+}
+
+
+def key_code(name: str) -> int | None:
+    """Resolve a key NAME (`Return`, `F4`, `super`, `ctrl`, `space`) to a code."""
+    if name in KEYMAP:
+        return KEYMAP[name]
+    lowered = name.lower()
+    if lowered in _KEY_ALIASES:
+        return KEYMAP[_KEY_ALIASES[lowered]]
+    for candidate in (lowered, name.upper(), name.capitalize()):
+        if candidate in KEYMAP:
+            return KEYMAP[candidate]
+    return None
+
+
 def char_to_key(ch: str) -> tuple[int, bool] | None:
-    """Return (keycode, needs_shift) for an ASCII char, or None."""
+    """Return (keycode, needs_shift) for a printable char, or None.
+
+    Only ASCII/US-layout characters are supported; anything else returns None
+    so the caller can skip it (a non-ASCII char must not raise).
+    """
+    if ch == " ":
+        return KEYMAP["space"], False
     if ch.isalpha():
+        if ch.lower() not in KEYMAP:
+            return None
         return KEYMAP[ch.lower()], ch.isupper()
     if ch.isdigit():
         return KEYMAP[ch], False

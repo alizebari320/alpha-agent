@@ -17,7 +17,6 @@ import asyncio
 import base64
 import io
 import logging
-import time
 from dataclasses import dataclass
 
 from ..ipc import CTL_SOCK, HUD_SOCK
@@ -106,7 +105,7 @@ def model_to_screen(mx: float, my: float, shot_w: int, shot_h: int,
     real_w, real_h = monitor["w"], monitor["h"]
     sx = mx * (real_w / shot_w)
     sy = my * (real_h / shot_h)
-    return int(round(monitor["x"] + sx)), int(round(monitor["y"] + sy))
+    return round(monitor["x"] + sx), round(monitor["y"] + sy)
 
 
 def screen_to_model(sx: float, sy: float, shot_w: int, shot_h: int,
@@ -165,7 +164,7 @@ def som_label(elements: list[AtspiElement], shot_w: int, shot_h: int, monitor: d
 
 
 def som_table_text(labels: list[dict]) -> str:
-    return "\n".join(f"{l['label']}: {l['desc']}" for l in labels)
+    return "\n".join(f"{lbl['label']}: {lbl['desc']}" for lbl in labels)
 
 
 def draw_som_png(png_b64: str, label_map: dict[int, dict]) -> str:
@@ -206,6 +205,7 @@ class Vision:
         self.daemon = daemon
         self.password_lock = password_lock
         self.max_width = max_width
+        self._share_warned = False
 
     def _active_monitor(self) -> dict:
         mons = self.daemon.monitors or [{"name": "primary", "x": 0, "y": 0,
@@ -214,7 +214,16 @@ class Vision:
         return mons[0]
 
     async def screenshot(self, downscale: bool = True) -> Screenshot | None:
-        data = await self.worker._send("screenshot", timeout=15.0)
+        try:
+            data = await self.worker._send("screenshot", timeout=15.0)
+        except TimeoutError:
+            # The HUD is alive but could not produce a frame — almost always
+            # because the portal screen-sharing prompt was never approved.
+            if not self._share_warned:
+                log.warning("screenshot unavailable — grant screen sharing in the "
+                            "Alpha HUD (Share button); continuing without vision")
+                self._share_warned = True
+            return None
         if not data.get("ok"):
             log.warning("screenshot failed: %s", data.get("error"))
             return None
@@ -237,7 +246,11 @@ class Vision:
         return Screenshot(png_b64=png_b64, width=w, height=h, monitor=mon)
 
     async def atspi(self) -> list[AtspiElement]:
-        data = await self.worker._send("atspi", timeout=8.0)
+        try:
+            data = await self.worker._send("atspi", timeout=8.0)
+        except TimeoutError:
+            log.warning("atspi timed out (accessibility bus busy?)")
+            return []
         if not data.get("ok"):
             log.warning("atspi failed: %s", data.get("error"))
             return []
@@ -251,6 +264,7 @@ class Vision:
             elements = await self.atspi()
         for el in elements:
             if el.is_password and el.focused:
-                log.warning("password field focused — vision/typing locked")
+                log.warning("password field focused — vision/typing locked "
+                            "(role=%s name=%r app=%r)", el.role, el.name, getattr(el, "app", ""))
                 return True
         return False

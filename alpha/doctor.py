@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 
@@ -21,7 +21,6 @@ from . import paths
 from .config import Config, load_config
 from .credentials import get_key, keyring_available
 from .log import redact
-from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -67,8 +66,8 @@ def _monitors() -> str:
     # X11 and Wayland (wlroots) both often expose xrandr; GNOME Wayland may not.
     ok, out = _run(["xrandr", "--query"])
     if ok and out:
-        lines = [l for l in out.splitlines() if " connected" in l]
-        return ", ".join(l.split()[0] + " " + l.split("(")[0].split()[-1] for l in lines)
+        lines = [ln for ln in out.splitlines() if " connected" in ln]
+        return ", ".join(ln.split()[0] + " " + ln.split("(")[0].split()[-1] for ln in lines)
     # fallback: wlr-randr / gnome
     for cmd in ([["wlr-randr"], ["gnome-randr"], ["kscreen-doctor", "-o"]]):
         ok, out = _run(cmd)
@@ -78,13 +77,16 @@ def _monitors() -> str:
 
 
 def _audio_devices() -> str:
-    ok, out = _run(["pactl", "info"])
+    ok, _out = _run(["pactl", "info"])
     if not ok:
         return "pactl unavailable"
     sink_ok, sinks = _run(["pactl", "list", "short", "sources"])
     src_ok, srcs = _run(["pactl", "list", "short", "sinks"])
     def names(s):
-        return ", ".join(l.split("\t")[1] if len(l.split("\t")) > 1 else l for l in s.splitlines() if l)
+        return ", ".join(
+            part[1] if len(part := ln.split("\t")) > 1 else ln
+            for ln in s.splitlines() if ln
+        )
     return f"inputs=[{names(srcs if src_ok else '')}] outputs=[{names(sinks if sink_ok else '')}]"
 
 
@@ -176,7 +178,7 @@ def _check_audio_pipeline(cfg: Config | None, add) -> None:
     try:
         import sounddevice as sd
 
-        _, idx = sd.default.device
+        _, _idx = sd.default.device
         dev = sd.query_devices(kind="input")
         add("default input device", True, dev["name"])
     except Exception as e:

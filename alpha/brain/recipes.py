@@ -54,7 +54,7 @@ class Recipe:
         self.path(root).write_text(json.dumps(asdict(self), indent=1))
 
     @classmethod
-    def load(cls, p: Path) -> "Recipe":
+    def load(cls, p: Path) -> Recipe:
         return cls(**json.loads(p.read_text()))
 
 

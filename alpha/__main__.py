@@ -13,7 +13,6 @@ import argparse
 import asyncio
 import logging
 import sys
-from pathlib import Path
 
 from . import __version__, paths
 from .log import configure_logging, redact
@@ -32,12 +31,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="first-run wizard (import credentials, set name)")
 
-    m = sub.add_parser("mute", help="mute the running daemon (releases the mic)")
+    sub.add_parser("mute", help="mute the running daemon (releases the mic)")
     sub.add_parser("unmute", help="unmute the running daemon")
     sub.add_parser("mute-toggle", help="toggle mute on the running daemon")
     sub.add_parser("state", help="query the running daemon's state")
     sub.add_parser("abort", help="ABORT: kill any running action loop instantly (§10)")
     sub.add_parser("install-hotkeys", help="register GNOME hotkeys: Ctrl+Alt+M mute, Ctrl+Alt+Q abort")
+
+    ask = sub.add_parser("ask", help="run one request through the full agent loop (text mode)")
+    ask.add_argument("request", nargs="+", help="what you want Alpha to do")
+    ask.add_argument("--no-speak", action="store_true", help="print the answer only")
 
     rec = sub.add_parser("recipes", help="manage learned deterministic macros")
     rec.add_argument("action", choices=["list", "delete", "export", "import"])
@@ -47,9 +50,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_init() -> int:
-    from .credentials import (PREFERRED_PROVIDER_KEYS, Provider, discover_opencode,
-                              import_provider_into_config, store_key)
-    from .config import Config, ConfigError, parse_config
+    from .credentials import (
+        discover_opencode,
+        import_provider_into_config,
+    )
 
     paths.ensure_dirs()
 
@@ -95,6 +99,32 @@ def _cmd_doctor(network: bool) -> int:
         cfg = None
         print(f"[WARN] {redact(str(e))}", file=sys.stderr)
     return doctor_main(cfg, network=network)
+
+
+def _cmd_ask(request: str, speak: bool) -> int:
+    """Text-mode request: same plan/act/verify path the microphone triggers."""
+    import asyncio
+    import json
+
+    from .ipc import ctl_client
+
+    async def run():
+        return await ctl_client("ask", text=request, no_speak=not speak, timeout=600)
+
+    try:
+        reply = asyncio.run(run())
+    except Exception as e:  # daemon down / timeout
+        print(f"error: {e}")
+        return 1
+    if not reply.get("ok"):
+        print(f"error: {reply.get('error', 'daemon not reachable')}")
+        return 1
+    print(reply.get("answer", ""))
+    if reply.get("trace"):
+        print("\n--- steps ---")
+        for step in reply["trace"]:
+            print("  " + json.dumps(step)[:200])
+    return 0
 
 
 def _cmd_ctl(cmd: str) -> int:
@@ -226,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init()
     if args.command in ("mute", "unmute", "mute-toggle", "state", "abort"):
         return _cmd_ctl(args.command)
+    if args.command == "ask":
+        return _cmd_ask(" ".join(args.request), speak=not args.no_speak)
     if args.command == "install-hotkeys":
         return _cmd_install_hotkeys()
     if args.command == "recipes":

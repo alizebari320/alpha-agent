@@ -2,8 +2,9 @@
 
 Run headless; renders a preview to __ALPHA_PREVIEW__ (replaced at runtime).
 """
-import bpy
 import random
+
+import bpy
 
 OUT = "__ALPHA_PREVIEW__"
 random.seed(7)

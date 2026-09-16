@@ -2,9 +2,9 @@
 
 import pytest
 
+from alpha.config import SafetyConfig
 from alpha.input.evdev import KEYMAP, char_to_key
 from alpha.safety.guard import AbortRequested, SafetyGuard
-from alpha.config import SafetyConfig
 
 
 def test_keymap_covers_essentials():

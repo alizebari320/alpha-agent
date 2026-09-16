@@ -8,19 +8,27 @@ text-only grounding — AT-SPI + OmniParser text, no screenshot).
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 import httpx
 
+from ... import paths
 from ...config import LLMRole
 from ...credentials import get_key
 
 log = logging.getLogger(__name__)
+
+
+def _is_html(r) -> bool:
+    """True when an error response is an HTML page, not API JSON."""
+    ctype = (r.headers.get("content-type") or "").lower()
+    body = (r.text or "")[:200].lstrip().lower()
+    return "text/html" in ctype or body.startswith("<!doctype") or body.startswith("<html")
 
 
 @dataclass
@@ -87,14 +95,62 @@ class OpenAICompatibleProvider(LLMProvider):
                     return self._parse(r.json())
                 # 429/5xx: retry with backoff
                 if r.status_code in (429, 500, 502, 503, 504):
-                    last_err = f"HTTP {r.status_code}"
+                    last_err = self._describe_error(r)
                     time.sleep(1.5 * (attempt + 1))
                     continue
-                raise RuntimeError(f"provider HTTP {r.status_code}: {r.text[:200]}")
+                # Gateways in front of the API occasionally answer with an
+                # HTML error page (observed: HTTP 405 from a CDN edge). Those
+                # are transient infrastructure noise, not a bad request, so
+                # retry them instead of failing the user's request.
+                if _is_html(r):
+                    # WAF-ish rejections are content-dependent; keep the body
+                    # around so the user can see exactly what was refused.
+                    if os.environ.get("ALPHA_DEBUG_PAYLOAD"):
+                        try:
+                            paths.ensure_dirs()
+                            dump = paths.STATE_DIR / "rejected-request.json"
+                            dump.write_text(json.dumps({"url": url, "headers": {
+                                k: ("***" if k == "Authorization" else v) for k, v in headers.items()},
+                                "body": body}, indent=2)[:4_000_000])
+                            log.warning("rejected request dumped to %s", dump)
+                        except Exception:  # noqa: BLE001
+                            pass
+                if _is_html(r) and attempt < retries:
+                    last_err = f"HTTP {r.status_code} (gateway HTML page)"
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(self._describe_error(r))
             except httpx.HTTPError as e:
                 last_err = str(e)
                 time.sleep(1.5 * (attempt + 1))
         raise RuntimeError(f"provider failed after retries: {last_err}")
+
+    def _describe_error(self, r: "httpx.Response") -> str:
+        """Turn a provider error into something a human can act on."""
+        text = (r.text or "")[:300]
+        if "no available channel" in text or "无可用渠道" in text:
+            models = self.available_models()
+            hint = f" Available models: {', '.join(models)}" if models else ""
+            return (f"model {self.role.model!r} is not available on this account "
+                    f"(HTTP {r.status_code}).{hint}")
+        if "quota" in text.lower():
+            return f"provider quota exhausted: {text}"
+        if _is_html(r):
+            return f"HTTP {r.status_code}: gateway returned an HTML error page"
+        return f"provider HTTP {r.status_code}: {text}"
+
+    def available_models(self) -> list[str]:
+        """Model ids this account may use (empty list if unavailable)."""
+        try:
+            r = httpx.get(f"{self.base_url}/models", timeout=15.0, headers={
+                "Authorization": f"Bearer {self.key}",
+                "User-Agent": self.role.user_agent,
+            })
+            if r.status_code == 200:
+                return [m.get("id", "") for m in (r.json().get("data") or []) if m.get("id")]
+        except httpx.HTTPError:
+            pass
+        return []
 
     def _parse(self, data: dict) -> LLMResponse:
         msg = (data.get("choices") or [{}])[0].get("message", {})
@@ -130,7 +186,7 @@ class OpenAICompatibleProvider(LLMProvider):
              "image_url": {"url": f"data:image/png;base64,{png1px}"}},
         ]}]
         try:
-            r = self.send(msgs, tools=None, max_tokens=8)
+            self.send(msgs, tools=None, max_tokens=8)
             self._vision = True
         except Exception as e:
             log.warning("vision probe failed (%s): text-only grounding", str(e)[:120])

@@ -18,7 +18,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from . import paths
@@ -103,8 +102,9 @@ class LineServer:
 CtlServer = LineServer
 
 
-async def ctl_client(cmd: str, sock_path: Path | None = None, timeout: float = 3.0) -> dict:
-    """Send one command to a running daemon; return its reply (or error)."""
+async def ctl_client(cmd: str, sock_path: Path | None = None, timeout: float = 3.0,
+                     **extra) -> dict:
+    """Send one command (plus optional extra fields) to the daemon."""
     import socket as _socket
 
     sock_path = sock_path or CTL_SOCK
@@ -112,7 +112,7 @@ async def ctl_client(cmd: str, sock_path: Path | None = None, timeout: float = 3
     s.settimeout(timeout)
     try:
         s.connect(str(sock_path))
-        s.sendall(json.dumps({"cmd": cmd}).encode() + b"\n")
+        s.sendall(json.dumps({"cmd": cmd, **extra}).encode() + b"\n")
         buf = b""
         while b"\n" not in buf:
             chunk = s.recv(4096)

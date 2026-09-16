@@ -23,7 +23,7 @@ from enum import Enum
 
 import numpy as np
 
-from .audio import FRAME_SAMPLES, Mic, Speaker, ack_sound, error_sound, done_sound
+from .audio import FRAME_SAMPLES, Mic, Speaker, ack_sound, done_sound, error_sound
 from .config import Config, load_config
 from .ipc import CTL_SOCK, HUD_SOCK, CtlServer, LineServer, spawn_hud
 
@@ -180,6 +180,21 @@ class Daemon:
             pcm, sr = error_sound()
             asyncio.create_task(asyncio.to_thread(self._play_and_wait, pcm, sr))
             return {"ok": True, "aborted": True}
+        if cmd == "ask":
+            # text mode (`alpha ask "..."`): the full plan+act path with no mic,
+            # used for testing and for users who prefer typing.
+            text = (msg.get("text") or "").strip()
+            if not text:
+                return {"ok": False, "error": "empty request"}
+            if self._busy:
+                return {"ok": False, "error": "busy"}
+            self._busy = True
+            try:
+                answer = await self._run_request(text, speak=not msg.get("no_speak"))
+            finally:
+                self._busy = False
+                self.transition(State.IDLE)
+            return {"ok": True, "answer": answer}
         if cmd == "res":
             # vision worker reply (correlated by id)
             self.worker.resolve(msg)
@@ -200,6 +215,13 @@ class Daemon:
                 h = max(m["y"] + m["h"] for m in self.monitors)
                 self.screen_size = (w, h)
             log.info("geometry: monitors=%s screen=%s", self.monitors, self.screen_size)
+            # Pre-warm the input backend now: virtual devices need a moment
+            # before Mutter accepts events (see alpha/input/uinput.py). Paying
+            # that cost at startup keeps the first real command instant.
+            try:
+                await asyncio.to_thread(self._get_input)
+            except Exception as e:
+                log.warning("input backend not ready: %s", e)
             return {"ok": True}
         return {"ok": False, "error": f"unknown command {cmd!r}"}
 
@@ -341,47 +363,57 @@ class Daemon:
 
             # 2) transcribe
             self.transition(State.THINKING)
-            self._hud_state(text or "…")
+            self._hud_state("…")
             text = await asyncio.to_thread(self._get_stt().transcribe, request)
             log.info("request transcript: %r", text)
             if not text:
                 await self._say_error("Sorry, I couldn't understand that.")
                 return
+            self._hud_state(text)
 
             # strip a leading wake phrase if the user said it in one breath
             ww = self.cfg.assistant.wake_word.phrase.lower()
             if text.lower().startswith(ww):
                 text = text[len(ww):].strip(" ,.-")
 
-            # 3) plan + act + answer (M6 agent loop; abort-checked inside)
-            from .safety.guard import AbortRequested
-
-            # A new request begins: clear any stale abort from the previous one
-            # (aborts during idle apply to nothing; §10 semantics).
-            self.guard.clear_abort()
-            try:
-                self.transition(State.ACTING)
-                self._hud_state(text[:80])
-                answer = await self._get_agent().run(text)
-            except AbortRequested:
-                self.transition(State.IDLE)
-                await self.speak("Aborted.")
-                return
-            except Exception as e:
-                log.exception("agent loop failed")
-                # §11.5: spoken message, never a stack trace
-                answer = self._friendly_error(e)
-
-            self.transition(State.SPEAKING)
-            self._hud_state(answer[:120])
-            await asyncio.to_thread(self._say, answer)
-            pcm, sr = done_sound()
-            await asyncio.to_thread(self._play_and_wait, pcm, sr)
+            await self._run_request(text)
         finally:
             self.transition(State.IDLE)
             self.mic.clear()
             self._last_busy = time.time()
             self._busy = False
+
+    async def _run_request(self, text: str, speak: bool = True) -> str:
+        """Plan + act + answer for one already-transcribed request.
+
+        Shared by the voice path and by `alpha ask` (text mode), so the whole
+        pipeline can be exercised without a microphone.
+        """
+        from .safety.guard import AbortRequested
+
+        # A new request begins: clear any stale abort from the previous one
+        # (aborts during idle apply to nothing; §10 semantics).
+        self.guard.clear_abort()
+        try:
+            self.transition(State.ACTING)
+            self._hud_state(text[:80])
+            answer = await self._get_agent().run(text)
+        except AbortRequested:
+            self.transition(State.IDLE)
+            await self.speak("Aborted.")
+            return "Aborted."
+        except Exception as e:
+            log.exception("agent loop failed")
+            # §11.5: spoken message, never a stack trace
+            answer = self._friendly_error(e)
+
+        self.transition(State.SPEAKING)
+        self._hud_state(answer[:120])
+        if speak:
+            await asyncio.to_thread(self._say, answer)
+            pcm, sr = done_sound()
+            await asyncio.to_thread(self._play_and_wait, pcm, sr)
+        return answer
 
     def _play_and_wait(self, pcm: np.ndarray, sr: int) -> None:
         self.speaker.play_pcm(pcm, sr)
@@ -418,7 +450,13 @@ class Daemon:
         msg = str(e).lower()
         if isinstance(e, httpx.ConnectError) or "connection" in msg or "network" in msg:
             return "I can't reach my model provider — the internet seems down."
-        if "401" in msg or "unauthorized" in msg or "invalid" in msg and "key" in msg:
+        if "quota" in msg or "insufficient" in msg or "credit" in msg or "billing" in msg:
+            return ("My API credit is used up, so I can't think right now. "
+                    "Add credit to the provider account or switch providers in the config.")
+        if "is not available on this account" in msg:
+            return ("The model I'm configured to use isn't available on this account. "
+                    "Run alpha doctor to see which models you can use.")
+        if "401" in msg or "unauthorized" in msg or ("invalid" in msg and "key" in msg):
             return "My API key was rejected. Please re-run alpha init."
         if "429" in msg or "rate" in msg:
             return "The model provider is rate limiting me. Try again in a minute."
