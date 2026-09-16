@@ -4,6 +4,84 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Idle CPU in `kws` mode** — the wake gate let room noise through, so
+  whisper-tiny was asked to transcribe noise roughly every 12 s (31 times in one
+  6-minute stretch, answering every one with its classic hallucination set:
+  `'Thank you.'`, `'I'm sorry.'`) at a cost of ~0.65 s of CPU each. The gate now
+  tracks room tone (`listen.NoiseFloor`, 10th percentile of the last ~1 minute of
+  windows) and requires a window to clear 2x that *and* the absolute `min_rms`.
+  Measured on the same machine, room and 6-minute soak: idle CPU **11.6 % -> 1.7 %**
+  of a core, idle daemon RSS **342 MiB -> 194 MiB** (whisper-tiny now never loads
+  at all), peak idle CPU **18 % -> 2.4 %**. Every gate opening is logged at INFO.
+- Each `kws` decode costs ~0.65 s of CPU regardless of window length (whisper pads
+  to a 30 s mel chunk), so the gate *is* the CPU budget. Measured: 2.0 s -> 653 ms,
+  1.0 s -> 606 ms, 0.5 s -> 567 ms; and the background decoder is pinned to one
+  thread (112.9 % -> 90.7 % for the same workload, leaving other cores free).
+
+Found by re-walking every documented flow end to end after 0.1.0. The first
+three are the same bug wearing three hats: a trained wake word could be
+*installed* but never *used*, and the docs described a config key that does not
+exist.
+
+### Fixed
+
+- **A trained wake word was unusable, and the install went to the wrong place.**
+  `scripts/train-wake-word.py --install` copied the model into
+  `~/.local/share/alpha/models/`, but config validation **and** the loader
+  resolve custom wake words in `~/.local/share/alpha/wakewords/`. On top of
+  that, `PretrainedWake` rejected any name outside `BUNDLED_WAKEWORDS` even when
+  the file existed. So the documented train → `--install` → set
+  `mode = "pretrained"` flow passed nothing and crashed the daemon at startup
+  with `ValueError: 'hey_alpha' has no shipped pretrained model`. The installer
+  now targets the directory the loader reads, `resolve_pretrained_model()`
+  returns openWakeWord a *path* for trained models (falling back to the bundled
+  name, and matching the inference framework to the file it found), and the
+  docs point at `wakewords/` too.
+- **`--check` and `--run` hard-coded
+  `.venv/lib/python3.11/site-packages/openwakeword/train.py`**, so the training
+  driver only worked from a checkout with that exact layout. It now asks the
+  installed package where `train.py` is and prints the resolved path.
+- **Misspelled config keys were silently ignored.** `docs/WAKE_WORD.md`
+  documented `wake_word.min_score` in four places; the field is `threshold`, so
+  following the docs to tune sensitivity did nothing at all, with no warning.
+  Unknown keys are now reported — with a did-you-mean suggestion and the list of
+  valid keys — by `alpha doctor` and in the daemon log. The docs are corrected.
+- **`alpha config` errors pointed at a script that does not exist**
+  (`scripts/train-wakeword.py`).
+
+### Changed
+
+- **`kws` wake mode no longer runs whisper on every sound.** Each decode costs a
+  *fixed* ~0.65 s of CPU — whisper pads every input to a 30 s mel chunk, so a
+  0.5 s window costs 567 ms and a 2 s window costs 653 ms (both measured). Idle
+  in a quiet room is ~2 % of one core, but continuous background speech pushed
+  the same daemon to 20–85 % spikes. Three changes: the wake gate is now a
+  single call that checks the VAD ratio *and* an RMS floor, the new
+  `assistant.wake_word.min_rms` (default **300**, int16 units) makes that floor
+  tunable, and the background decoder is capped at one CPU thread
+  (`cpu_threads=1`; the request transcriber still uses every core).
+- `alpha doctor --levels` samples the microphone and prints, per window, the
+  level and VAD ratio next to the thresholds and whether the window would be
+  decoded — so the floor can be tuned against your room instead of guessed.
+- `scripts/soak.py` drives both wake→warm and unload transitions itself and
+  reports a separate `cooled` phase. Previously the warm phase never ended, so
+  731 MiB (warm), 215 MiB (unloaded) and 377 MiB (after the wake path's first
+  decode) were averaged together under one label.
+
+### Measured (same machine as below)
+
+| Phase (`kws` default) | daemon | HUD | total | CPU |
+|---|---|---|---|---|
+| Fresh start, wake matcher loaded, nothing decoded yet | 172 MiB | 179 MiB | 351 MiB | 1.2 % |
+| Idle after the wake path's first transcription | 342 MiB | 179 MiB | 521 MiB | 1.2 % |
+| After `alpha warm` (whisper-small + piper + **kws whisper-tiny**) | 985 MiB | 179 MiB | 1165 MiB | 2.2 % |
+| After `alpha unload` | 215 MiB | 179 MiB | 394 MiB | 2.2 % |
+| Idle while the room is talking | — | — | — | up to 85 % spikes |
+
 ## [0.1.0] — 2025-09-16
 
 First release. A voice-driven computer-use agent for Fedora that runs as a
@@ -134,7 +212,7 @@ user service, on both Wayland and X11, without root.
 | Phase | daemon | HUD | total | CPU |
 |---|---|---|---|---|
 | Idle, `wake_word.mode="pretrained"` | 205 MiB | 179 MiB | 384 MiB | 5.9 % |
-| Idle, `wake_word.mode="kws"` | 292–393 MiB | 179 MiB | 465–573 MiB | 2.2 % |
+| Idle, `wake_word.mode="kws"` | 172–393 MiB | 179 MiB | 351–573 MiB | 1.2–2.2 % |
 | After `alpha warm` | 1003 MiB | 173 MiB | 1176 MiB | 2.2 % |
 | After idle unload | 292 MiB | 173 MiB | 466 MiB | 2.2 % |
 

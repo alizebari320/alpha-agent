@@ -7,9 +7,10 @@ Secrets are NEVER stored here: the API key lives in the system keyring
 
 from __future__ import annotations
 
+import difflib
 import logging
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,14 @@ class WakeWordConfig:
     model: str = "hey_jarvis"
     threshold: float = 0.6
     refractory_s: float = 2.0
+    # mode="kws" only: the level floor (int16 RMS) a window must clear before
+    # Alpha spends a whisper decode on it. Each decode costs ~0.65 s of CPU
+    # regardless of window length, so this is the main throttle on background
+    # CPU in a noisy room. 300 int16 RMS was chosen against measured room tone
+    # on the dev machine (280-955) with normal speech around 2000; raise it if
+    # your room is louder, lower it if you speak quietly. Measure, don't guess:
+    #   alpha doctor --levels
+    min_rms: float = 300.0
 
 
 @dataclass
@@ -130,6 +139,11 @@ class Config:
     vision: VisionConfig = field(default_factory=VisionConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     resources: ResourceConfig = field(default_factory=ResourceConfig)
+    # Non-fatal problems found while parsing, e.g. a misspelled key. Surfaced by
+    # `alpha doctor` and the daemon log. Unknown keys used to be dropped in
+    # silence, which made a typo (docs said `min_score`, the field is
+    # `threshold`) a no-op that looked like a bug in Alpha.
+    warnings: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -160,6 +174,21 @@ def _parse_llm_role(data: dict[str, Any], default: LLMRole) -> LLMRole:
 VALID_VISION_MODES = {"auto", "on", "off"}
 
 
+def _check_unknown_keys(section: str, supplied: dict, dataclass_type: type,
+                        cfg: Config) -> None:
+    """Record a warning for every key that is not a field of dataclass_type."""
+    known = {f.name for f in fields(dataclass_type)}
+    for key in supplied:
+        if key in known:
+            continue
+        close = difflib.get_close_matches(key, sorted(known), n=1, cutoff=0.6)
+        hint = f" — did you mean '{close[0]}'?" if close else ""
+        cfg.warnings.append(
+            f"config.toml [{section}]: unknown key '{key}'{hint} "
+            f"(valid: {', '.join(sorted(known))})"
+        )
+
+
 def parse_config(data: dict[str, Any]) -> Config:
     """Build a validated Config from a parsed-TOML dict. Raises ConfigError."""
     cfg = Config()
@@ -167,13 +196,16 @@ def parse_config(data: dict[str, Any]) -> Config:
     a = _get(data, "assistant", default={}) or {}
     cfg.assistant.name = str(a.get("name", cfg.assistant.name)).strip().lower() or "alpha"
     cfg.assistant.language = str(a.get("language", cfg.assistant.language))
+    _check_unknown_keys("assistant", a, AssistantConfig, cfg)
     w = a.get("wake_word", {}) or {}
+    _check_unknown_keys("assistant.wake_word", w, WakeWordConfig, cfg)
     cfg.assistant.wake_word = WakeWordConfig(
         mode=str(w.get("mode", "kws")),
         phrase=str(w.get("phrase", f"hey {cfg.assistant.name}")),
         model=str(w.get("model", "hey_jarvis")),
         threshold=float(w.get("threshold", 0.6)),
         refractory_s=float(w.get("refractory_s", 2.0)),
+        min_rms=float(w.get("min_rms", 300.0)),
     )
     if cfg.assistant.wake_word.mode not in VALID_WAKE_MODES:
         raise ConfigError(f"wake_word.mode must be one of {sorted(VALID_WAKE_MODES)}")
@@ -186,7 +218,7 @@ def parse_config(data: dict[str, Any]) -> Config:
                 raise ConfigError(
                     f"unknown pretrained wake word model '{cfg.assistant.wake_word.model}'; "
                     f"bundled: {list(BUNDLED_WAKEWORDS)}, or train one with "
-                    f"scripts/train-wakeword.py, or switch to mode 'kws'"
+                    f"scripts/train-wake-word.py, or switch to mode 'kws'"
                 )
 
     s = _get(data, "stt", default={}) or {}

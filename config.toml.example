@@ -27,6 +27,12 @@ phrase = "hey alpha"              # free-form in kws mode
 model = "hey_jarvis"              # only used in pretrained mode
 threshold = 0.6
 refractory_s = 2.0
+# kws only: the level floor (int16 RMS) a window must clear before Alpha spends
+# a whisper decode on it. Each decode costs a FIXED ~0.65 s of CPU (whisper pads
+# every input to a 30 s mel chunk, so a shorter window is no cheaper), so this
+# is the main throttle on background CPU in a noisy room. Tune it against your
+# own room:  alpha doctor --levels
+min_rms = 300.0
 
 [stt]
 model = "auto"                        # auto | tiny | base | small | medium (auto picks by RAM)

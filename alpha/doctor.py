@@ -107,6 +107,9 @@ def run_doctor(cfg: Config | None, network: bool = True) -> DoctorReport:
         add("config", False, f"missing/invalid at {paths.CONFIG_FILE}", "fail")
     else:
         add("config", True, f"assistant={cfg.assistant.name} model={cfg.llm.planner.model}")
+        # A misspelled key changes nothing and warns nowhere, so say it loudly.
+        for w in getattr(cfg, "warnings", []):
+            add("config key", False, w, "warn")
 
     # 3. keyring + key
     ok, backend = keyring_available()
@@ -411,6 +414,61 @@ def _check_provider(cfg: Config, add) -> None:
             "Alpha still works, but expect long waits", "warn")
     except Exception as e:
         add("provider reachability", False, redact(str(e))[:160], "fail")
+
+
+def mic_levels(cfg: Config | None, seconds: float = 3.0,
+               window_s: float = 2.0) -> int:
+    """Print what the wake-word gate actually sees from this microphone.
+
+    Tuning `assistant.wake_word.min_rms` by guesswork is unpleasant, so this
+    samples the real mic and shows, per window, the level and VAD ratio next to
+    the thresholds currently configured, plus whether a window would be decoded.
+
+    Costs no CPU beyond mic capture — whisper is never invoked here.
+    """
+    import time
+
+    import numpy as np
+
+    from .audio import SAMPLERATE, Mic
+    from .listen import KWS_MIN_SPEECH_RATIO, Recorder, wake_gate_opens
+
+    floor = cfg.assistant.wake_word.min_rms if cfg else 300.0
+
+    print(f"sampling {seconds:.0f}s of microphone at 16 kHz "
+          f"(kws gate: ratio >= {KWS_MIN_SPEECH_RATIO}, rms >= {floor:.0f})\n")
+    mic = Mic()
+    mic.start()
+    rec = Recorder()
+    win = int(window_s * SAMPLERATE)
+    time.sleep(1.0)  # let the stream fill
+    rows = 0
+    deadline = time.time() + seconds
+    try:
+        while time.time() < deadline:
+            buf = np.zeros(0, dtype=np.int16)
+            target = time.time() + window_s + 1.0
+            while len(buf) < win and time.time() < target:
+                f = mic.pop_samples(1280)
+                if f is None:
+                    time.sleep(0.005)
+                    continue
+                buf = np.concatenate([buf, f])
+            if len(buf) < win:
+                print("  (no audio: is something else holding the microphone?)")
+                break
+            ratio, level = rec.speech_gate(buf)
+            decode = wake_gate_opens(ratio, level, floor)
+            print(f"  ratio={ratio:.2f} rms={level:7.0f} -> "
+                  f"{'DECODE (whisper runs, ~0.65 s CPU)' if decode else 'skip'}")
+            rows += 1
+    finally:
+        mic.stop()
+    if rows == 0:
+        return 1
+    print("\nSpeech should read well above the rms floor; room tone should not.")
+    print("Raise min_rms in config.toml if idle CPU is high while nobody speaks.")
+    return 0
 
 
 def main(cfg: Config | None = None, network: bool = True) -> int:

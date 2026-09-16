@@ -19,7 +19,7 @@ import time
 
 import numpy as np
 
-from . import models
+from . import models, paths
 
 log = logging.getLogger(__name__)
 
@@ -29,28 +29,57 @@ BUNDLED_WAKEWORDS = ("hey_jarvis", "hey_mycroft", "hey_rhasspy", "alexa")
 FRAME = 1280  # 80 ms @ 16kHz, openwakeword's expected stride
 
 
+def resolve_pretrained_model(name: str) -> str:
+    """Map a wake-word name to something openWakeWord's ``Model()`` accepts.
+
+    openWakeWord takes either a bundled model name or a path to an ONNX/tflite
+    file. Alpha's config accepts a custom name when
+    ``~/.local/share/alpha/wakewords/<name>.onnx`` exists (that is where
+    ``scripts/train-wake-word.py --install`` puts it), but this function used to
+    reject anything outside ``BUNDLED_WAKEWORDS`` — so a trained model passed
+    config validation and then crashed the daemon here with "no shipped
+    pretrained model". The whole train → install → use flow was broken.
+
+    Returns the bundled name unchanged, or the path to the trained model.
+    """
+    if name in BUNDLED_WAKEWORDS:
+        return name
+    for suffix in (".onnx", ".tflite"):
+        custom = paths.WAKEWORD_DIR / f"{name}{suffix}"
+        if custom.is_file():
+            return str(custom)
+    raise ValueError(
+        f"no wake word model named '{name}': not one of the bundled models "
+        f"{list(BUNDLED_WAKEWORDS)}, and no trained model at "
+        f"{paths.WAKEWORD_DIR / (name + '.onnx')}. Train one with "
+        f"scripts/train-wake-word.py, or use mode='kws'."
+    )
+
+
 class PretrainedWake:
     """openWakeWord ONNX model, frame by frame."""
 
     def __init__(self, model_name: str, threshold: float = 0.5, refractory_s: float = 2.0):
-        if model_name not in BUNDLED_WAKEWORDS:
-            raise ValueError(
-                f"'{model_name}' has no shipped pretrained model; bundled: {BUNDLED_WAKEWORDS}. "
-                f"Use mode='kws' for custom names like 'hey alpha'."
-            )
         from openwakeword.model import Model
 
-        models.ensure_openwakeword([model_name])
+        resolved = resolve_pretrained_model(model_name)  # raises if it is unknown
+        bundled = model_name in BUNDLED_WAKEWORDS
+        if bundled:
+            models.ensure_openwakeword([model_name])
+        # Match the framework to the file we actually resolved to; asking for
+        # onnx while handing over a .tflite path fails at load time.
+        framework = "tflite" if resolved.endswith(".tflite") else "onnx"
         self.model_name = model_name
         self.threshold = threshold
         self.refractory_s = refractory_s
         self._last_fire = 0.0
         self._oww = Model(
-            wakeword_models=[model_name],
-            inference_framework="onnx",
+            wakeword_models=[resolved],
+            inference_framework=framework,
             vad_threshold=0.0,
         )
-        log.info("wake word (pretrained): %s", model_name)
+        log.info("wake word (pretrained): %s%s", model_name,
+                 "" if bundled else f" [trained: {resolved}]")
 
     def feed(self, frame: np.ndarray) -> bool:
         """Frame: int16 np array (len==1280). Returns True when woken."""
@@ -83,7 +112,8 @@ class KWSWake:
         if transcriber is None:
             from .stt import Transcriber
 
-            transcriber = Transcriber(model="tiny", language="en")
+            # cpu_threads=1: this decoder runs in the background forever.
+            transcriber = Transcriber(model="tiny", language="en", cpu_threads=1)
         self.transcriber = transcriber
         self.threshold = threshold
         log.info("wake word (kws): %r (whisper-tiny)", phrase)

@@ -16,14 +16,16 @@ log = logging.getLogger(__name__)
 
 
 class Transcriber:
-    def __init__(self, model: str = "auto", language: str = "auto"):
+    def __init__(self, model: str = "auto", language: str = "auto",
+                 cpu_threads: int = 0):
         self.model_name = models.pick_whisper_model(model)
         self.language = language
+        self.cpu_threads = cpu_threads
         self._model = None  # lazy
 
     def _load(self):
         if self._model is None:
-            self._model = models.ensure_whisper(self.model_name)
+            self._model = models.ensure_whisper(self.model_name, self.cpu_threads)
         return self._model
 
     def preload(self) -> None:

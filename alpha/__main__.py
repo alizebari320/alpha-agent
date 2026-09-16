@@ -28,6 +28,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("doctor", help="run diagnostics")
     d.add_argument("--no-network", action="store_true", help="skip the API reachability check")
+    d.add_argument("--levels", action="store_true",
+                   help="sample the mic and show the wake-word gate (for tuning min_rms)")
 
     sub.add_parser("init", help="first-run wizard (import credentials, set name)")
     sub.add_parser("models", help="download the speech models now (~250 MB, one time)")
@@ -94,15 +96,18 @@ def _cmd_init() -> int:
     return 0
 
 
-def _cmd_doctor(network: bool) -> int:
+def _cmd_doctor(network: bool, levels: bool = False) -> int:
     from .config import load_config
     from .doctor import main as doctor_main
+    from .doctor import mic_levels
 
     try:
         cfg = load_config()
     except Exception as e:
         cfg = None
         print(f"[WARN] {redact(str(e))}", file=sys.stderr)
+    if levels:
+        return mic_levels(cfg)
     return doctor_main(cfg, network=network)
 
 
@@ -320,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(args.verbose)
 
     if args.command == "doctor":
-        return _cmd_doctor(not args.no_network)
+        return _cmd_doctor(not args.no_network, levels=args.levels)
     if args.command == "install-service":
         from .unit import main as unit_main
 

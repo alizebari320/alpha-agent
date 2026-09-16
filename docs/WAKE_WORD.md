@@ -7,7 +7,7 @@ Alpha ships two wake engines. Which one you get is one config line:
 mode = "kws"          # "kws" (default) or "pretrained"
 phrase = "hey alpha"  # kws mode: any phrase you like
 model = "hey_jarvis"  # pretrained mode: an openWakeWord model name
-min_score = 0.6
+threshold = 0.6
 ```
 
 | | `kws` (default) | `pretrained` |
@@ -29,7 +29,7 @@ model (below) and switch to `pretrained` with it.
 
 ```toml
 [assistant]
-wake_word = { mode = "kws", phrase = "hey computer", min_score = 0.6 }
+wake_word = { mode = "kws", phrase = "hey computer", threshold = 0.6 }
 ```
 
 or:
@@ -45,7 +45,7 @@ Tips, from testing:
 - **2–4 syllables ending in a stressed vowel** work best ("hey alpha", "hey
   jarvis", "ok computer"). One-syllable phrases false-trigger constantly.
 - The matcher normalises phonetics (`ph` → `f`), so "hey alfa" also matches.
-- `min_score` (0–1) is the per-word fuzzy threshold. Raise it to 0.7+ if you get
+- `threshold` (0–1) is the per-word fuzzy threshold. Raise it to 0.7+ if you get
   false wakes; lower to 0.5 if you have to shout. The matcher requires **all**
   words of the phrase to match, not just one.
 - Whisper-tiny mangles unfamiliar names. "hey alva"/"hay alfa" still pass thanks
@@ -63,7 +63,7 @@ project ships a script that drives openWakeWord's **official** training pipeline
 (synthetic piper TTS positives + ACAV100M negatives + augmentation):
 
 ```bash
-scripts/train-wake-word.py --phrase "hey alpha" --out ~/.local/share/alpha/models/hey_alpha.onnx
+scripts/train-wake-word.py --phrase "hey alpha" --out ~/.local/share/alpha/wakewords/hey_alpha.onnx
 ```
 
 and a Colab notebook for a free GPU (the full pipeline wants one):
@@ -78,7 +78,7 @@ Both run the same upstream steps, so a model trained in Colab drops straight in:
 [assistant.wake_word]
 mode = "pretrained"
 model = "hey_alpha"                       # resolves to <models_dir>/hey_alpha.onnx
-min_score = 0.5
+threshold = 0.5
 ```
 
 Then restart and watch it fire:
@@ -100,9 +100,13 @@ journalctl --user -u alpha -f | grep "wake word (pretrained)"
    model from firing on conversation.
 3. **Train** — a small convolutional head over openWakeWord's shared
    melspectrogram + embedding models, ~10–30 minutes on a Colab T4.
-4. **Validate** — report the *false-accept rate per hour* on held-out negatives
-   and the recall on held-out positives. Alpha's log prints both; anything above
-   ~0.5 FA/hour will annoy you.
+4. **Validate** — openWakeWord's own trainer ends by reporting the
+   *false-positives-per-hour* on the held-out negative set and the recall on the
+   held-out positives; `--run` streams that output unchanged. The thresholds it
+   trains against are visible in the generated YAML
+   (`target_false_positives_per_hour: 0.2`, `target_recall: 0.25`) — Alpha does
+   not add its own evaluation on top, so trust the trainer's numbers, and be
+   suspicious of anything above ~0.5 FA/hour in a real room.
 
 Training config lives in `scripts/train-wake-word.py --help`; the Colab notebook
 exposes the same knobs as form fields.
@@ -110,13 +114,36 @@ exposes the same knobs as form fields.
 ### Model file layout
 
 ```
-~/.local/share/alpha/models/hey_alpha.onnx
-~/.local/share/alpha/models/hey_alpha.tflite     # optional, lower CPU
+~/.local/share/alpha/wakewords/hey_alpha.onnx     # written by --install
+~/.local/share/alpha/wakewords/hey_alpha.tflite   # optional sibling, lower CPU
 ```
 
-`ensure_openwakeword()` looks for the file first and only falls back to
-openWakeWord's bundled models, so a local `.onnx` always wins. `alpha models`
-prints which one resolved.
+`scripts/train-wake-word.py --install MODEL.onnx` puts the file there and names
+it after your phrase (`"hey alpha"` → `hey_alpha.onnx`). Resolution is:
+
+1. `alpha.wake.resolve_pretrained_model(name)` — if `name` is one of
+   openWakeWord's bundled models (`hey_jarvis`, `hey_mycroft`, `hey_rhasspy`,
+   `alexa`) it returns the name and openWakeWord downloads it on first use.
+2. Otherwise it requires `wakewords/<name>.onnx` (or `.tflite`) to exist and
+   returns **that path**, which is what openWakeWord loads.
+3. If neither exists, config validation fails at startup with the list of
+   bundled names — it does not silently fall back.
+
+So a trained model is used by name, but only via the `wakewords/` directory:
+
+```toml
+[assistant.wake_word]
+mode  = "pretrained"
+model = "hey_alpha"      # -> ~/.local/share/alpha/wakewords/hey_alpha.onnx
+```
+
+Verify without starting the daemon:
+
+```bash
+python -c "from alpha.wake import resolve_pretrained_model as r; print(r('hey_alpha'))"
+# -> /home/you/.local/share/alpha/wakewords/hey_alpha.onnx
+alpha doctor | grep -i wake
+```
 
 ## Which mode should you pick?
 

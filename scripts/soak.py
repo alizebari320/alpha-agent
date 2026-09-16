@@ -181,13 +181,29 @@ def main() -> int:
 
             # Exercise the model lifecycle so we measure both ends of it:
             # idle -> warm (whisper+piper loaded) -> idle again (unloaded).
+            #
+            # Both transitions are driven from HERE, not left to the daemon's own
+            # idle_unload_s timer: previously the warm phase never ended by
+            # itself, so post-unload and post-first-KWS-decode samples were all
+            # reported as "warm" and the group averages mixed three different
+            # memory states (731 MiB warm, 215 MiB unloaded, 377 MiB after the
+            # wake path's first decode). Labels must match what was measured.
             cycle = (now - start) % max(args.interval * 8, 60.0)
-            if phase == "idle" and args.minutes * 60 > 60 and cycle > 30:
-                r = ctl("warm")
-                if r.get("ok"):
-                    phase = "warm"
-                    print(f"  -> warm: daemon={r['rss_mb']:.1f} MiB "
-                          f"(+{r.get('delta_mb', 0):.1f})", flush=True)
+            if args.minutes * 60 > 120:
+                if phase == "idle" and cycle > 30:
+                    r = ctl("warm")
+                    if r.get("ok"):
+                        phase = "warm"
+                        print(f"  -> warm: daemon={r['rss_mb']:.1f} MiB "
+                              f"(+{r.get('delta_mb', 0):.1f})", flush=True)
+                elif phase == "warm" and cycle > 30 + args.interval * 3:
+                    r = ctl("unload")
+                    if r.get("ok"):
+                        phase = "cooled"
+                        print(f"  -> unload: daemon={r['rss_mb']:.1f} MiB",
+                              flush=True)
+                elif phase == "cooled" and cycle > 30 + args.interval * 6:
+                    phase = "idle"  # wrap; next cycle warms again
 
             time.sleep(args.interval)
     except KeyboardInterrupt:
@@ -199,11 +215,13 @@ def main() -> int:
 
     idle = [r for r in rows if r["phase"] == "idle"]
     warm = [r for r in rows if r["phase"] == "warm"]
+    cooled = [r for r in rows if r["phase"] == "cooled"]
     report = ["# Alpha soak test", "",
               f"- duration: {(time.time() - start) / 60:.1f} min, "
               f"{len(rows)} samples every {args.interval:g}s",
-              f"- samples: idle={len(idle)} warm={len(warm)}", ""]
-    for name, group in (("idle", idle), ("warm", warm)):
+              f"- samples: idle={len(idle)} warm={len(warm)} "
+              f"cooled={len(cooled)}", ""]
+    for name, group in (("idle", idle), ("warm", warm), ("cooled", cooled)):
         if not group:
             continue
         report += [f"## {name} (n={len(group)})", "",

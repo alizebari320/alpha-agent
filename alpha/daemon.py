@@ -43,6 +43,13 @@ class State(StrEnum):
 
 KWS_WINDOW_S = 2.0      # rolling KWS window (§8 Tier 3)
 KWS_CHECK_EVERY_S = 1.5  # how often the window is re-decoded
+# Gate for spending a decode. Both must pass: whisper pads every input to a 30 s
+# mel chunk, so each decode costs ~0.65 s of CPU no matter how long the window is
+# (measured: 653 ms for 2 s of audio, 567 ms for 0.5 s). Without the RMS floor,
+# continuous room tone that the VAD calls "speech" buys that charge every 1.5 s.
+# The ratio + level thresholds live in alpha/listen.py (KWS_MIN_SPEECH_RATIO,
+# wake_gate_opens); the rms floor is config assistant.wake_word.min_rms so users
+# in noisy rooms can tune it without editing code.
 
 
 class Daemon:
@@ -62,6 +69,7 @@ class Daemon:
 
         # Lazy components
         self._wake = None      # PretrainedWake | KWSWake
+        self._noise = None     # listen.NoiseFloor, kws mode only
         self._stt = None       # Transcriber
         self._tts = None       # SpeakerTTS
         self._recorder = None  # Recorder
@@ -285,6 +293,8 @@ class Daemon:
     async def run(self) -> None:
         log.info("alpha-agent daemon starting (assistant=%r, state=%s)",
                  self.cfg.assistant.name, self.state.value)
+        for w in getattr(self.cfg, "warnings", []):
+            log.warning("%s", w)
         self._install_signal_handlers()
         await self.hud.start()
         await self.ctl.start()
@@ -342,6 +352,12 @@ class Daemon:
     async def _kws_step(self, wake, frame: np.ndarray) -> bool:
         """Maintain a rolling 2 s window; every KWS_CHECK_EVERY_S, transcribe it
         and fuzzy-match the wake phrase (§8 Tier 3)."""
+        from .listen import NoiseFloor, wake_gate_opens
+
+        if self._noise is None:
+            self._noise = NoiseFloor(
+                floor_min=self.cfg.assistant.wake_word.min_rms)
+
         self._kws_buf = np.concatenate([self._kws_buf, frame])
         max_samples = int(KWS_WINDOW_S * 16000)
         if len(self._kws_buf) > max_samples:
@@ -358,13 +374,23 @@ class Daemon:
 
         window = self._kws_buf.copy()
 
-        # VAD gate (spec §8 Tier 3): skip whisper entirely when the window is
-        # just silence. This is what keeps idle CPU inside the §9 budget —
-        # whisper only runs when someone is actually speaking.
+        # VAD + level gate (spec §8 Tier 3): skip whisper entirely when the
+        # window is silence or low-level room tone. This is what keeps idle CPU
+        # inside the §9 budget — whisper only runs when someone is actually
+        # speaking, because every decode costs ~0.65 s of CPU (see constants).
         recorder = self._get_recorder()
-        ratio = await asyncio.to_thread(recorder.speech_ratio, window)
-        if ratio < 0.15:
+        ratio, level = await asyncio.to_thread(recorder.speech_gate, window)
+        # Adaptive floor: a fixed one cannot fit every room (see NoiseFloor).
+        self._noise.observe(level)
+        floor = self._noise.threshold()
+        if not wake_gate_opens(ratio, level, floor):
+            log.debug("kws gate: ratio=%.2f rms=%.0f floor=%.0f -> skipped",
+                      ratio, level, floor)
             return False
+        # Gate opened: worth an INFO line so a user can see *why* their idle CPU
+        # is up, and so the hallucination set below is visible in the journal.
+        log.info("kws gate OPEN: ratio=%.2f rms=%.0f (floor %.0f) -> decoding",
+                 ratio, level, floor)
 
         heard = await asyncio.to_thread(wake.feed_utterance, window)
         if heard:

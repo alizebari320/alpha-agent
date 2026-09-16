@@ -64,6 +64,21 @@ def human(n: int) -> str:
     return f"{n} B"
 
 
+def openwakeword_train_py() -> Path | None:
+    """Where openWakeWord's official train.py actually lives, or None.
+
+    Asking the installed package (instead of hardcoding
+    .venv/lib/python3.11/site-packages) keeps --check and --run working from any
+    environment: a system install, `uv run`, a different venv, or CI.
+    """
+    try:
+        import openwakeword
+    except Exception:
+        return None
+    candidate = Path(openwakeword.__file__).resolve().parent / "train.py"
+    return candidate if candidate.is_file() else None
+
+
 def check(workdir: Path) -> tuple[bool, list[str]]:
     """Report exactly what is installed, what is missing, and what it will cost."""
     import importlib.util
@@ -82,10 +97,10 @@ def check(workdir: Path) -> tuple[bool, list[str]]:
 
     # openwakeword training modules must be importable (they are in the venv)
     ow_ok = importlib.util.find_spec("openwakeword") is not None
-    ow_train = REPO_ROOT / ".venv/lib/python3.11/site-packages/openwakeword/train.py"
+    ow_train = openwakeword_train_py()
     print(f"  {'✓' if ow_ok else '✗'} openwakeword installed")
-    print(f"  {'✓' if ow_train.exists() else '✗'} openwakeword/train.py "
-          f"(official pipeline driver)")
+    print(f"  {'✓' if ow_train else '✗'} openwakeword/train.py "
+          f"(official pipeline driver)" + (f" at {ow_train}" if ow_train else ""))
 
     piper = workdir / "piper-sample-generator"
     print(f"  {'✓' if (piper / 'generate_samples.py').exists() else '✗'} "
@@ -188,10 +203,11 @@ def build_config(phrase: str, workdir: Path, n_samples: int, n_samples_val: int,
 
 def run_pipeline(cfg_path: Path, workdir: Path, stages: list[str]) -> int:
     """Run the official openwakeword/train.py stages, in order."""
-    train_py = REPO_ROOT / ".venv/lib/python3.11/site-packages/openwakeword/train.py"
-    if not train_py.exists():
-        print(f"error: {train_py} not found — openwakeword is not installed.",
-              file=sys.stderr)
+    train_py = openwakeword_train_py()
+    if train_py is None:
+        print("error: openwakeword/train.py not found — openwakeword is not "
+              "installed in this environment. Run scripts/train-wake-word.py "
+              "--check for the exact fix.", file=sys.stderr)
         return 2
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{workdir}:{REPO_ROOT}"
@@ -222,7 +238,12 @@ def install(model: Path, phrase: str, yes: bool) -> int:
         return 2
     name = phrase.strip().lower().replace(" ", "_")
     paths.ensure_dirs()
-    dest = paths.DATA_DIR / "models" / f"{name}{model.suffix}"
+    # MUST be WAKEWORD_DIR, not MODEL_DIR: config validation and the loader both
+    # resolve custom wake words at ~/.local/share/alpha/wakewords/<name>.onnx.
+    # Installing into models/ (as this did) meant that following this very
+    # command produced `ConfigError: unknown pretrained wake word model '<name>'`
+    # on the next start — the documented flow could not work.
+    dest = paths.WAKEWORD_DIR / f"{name}{model.suffix}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(model, dest)
     print(f"installed {dest}  ({human(dest.stat().st_size)})")

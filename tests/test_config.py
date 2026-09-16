@@ -100,3 +100,39 @@ def test_bundled_wakewords_present():
     assert len(BUNDLED_WAKEWORDS) >= 4
     # These are the models openwakeword actually ships (verified live).
     assert "hey_jarvis" in BUNDLED_WAKEWORDS
+
+
+def test_unknown_config_key_is_warned_about_not_ignored():
+    """A typo must not be a silent no-op.
+
+    Regression: docs told users to set `wake_word.min_score`, which is not a
+    field — the parser dropped it, threshold stayed 0.6, and the only symptom
+    was "tuning does nothing". The warning names the key and lists the valid
+    ones so the fix is obvious.
+    """
+    from alpha.config import parse_config
+
+    cfg = parse_config({
+        "assistant": {"wake_word": {"mode": "kws", "min_score": 0.9,
+                                    "phrase": "hey alpha"}},
+    })
+    assert cfg.assistant.wake_word.threshold == 0.6  # unchanged, as before
+    assert len(cfg.warnings) == 1
+    warning = cfg.warnings[0]
+    assert "min_score" in warning
+    assert "assistant.wake_word" in warning
+    assert "threshold" in warning          # the valid keys are listed
+    assert "did you mean" in warning       # and a suggestion is offered
+
+
+def test_valid_config_produces_no_warnings():
+    from alpha.config import parse_config
+
+    cfg = parse_config({
+        "assistant": {"name": "alpha", "language": "en",
+                      "wake_word": {"mode": "kws", "phrase": "hey alpha",
+                                    "threshold": 0.6, "min_rms": 200.0}},
+        "stt": {"model": "auto", "language": "auto", "compute_type": "int8"},
+    })
+    assert cfg.warnings == []
+    assert cfg.assistant.wake_word.min_rms == 200.0

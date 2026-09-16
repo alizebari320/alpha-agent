@@ -101,12 +101,22 @@ def pick_whisper_model(default: str = "auto") -> str:
         return "tiny.en"
 
 
-def ensure_whisper(model: str):
-    """Instantiate (downloading if needed) and return a WhisperModel."""
+def ensure_whisper(model: str, cpu_threads: int = 0):
+    """Instantiate (downloading if needed) and return a WhisperModel.
+
+    ``cpu_threads=0`` lets CTranslate2 choose (fastest for one-off requests).
+    The wake-word path passes 1: it re-decodes a 2 s window every couple of
+    seconds forever, and letting it grab every core made idle CPU spike to
+    20-85% whenever there was background speech (measured, see
+    docs/PERFORMANCE.md). One thread keeps the background share near the §9
+    budget while still being far faster than the window it decodes.
+    """
     from faster_whisper import WhisperModel
 
-    log.info("loading whisper model %r (downloads on first run)", model)
-    return WhisperModel(model, device="cpu", compute_type="int8")
+    log.info("loading whisper model %r (downloads on first run, threads=%s)",
+             model, cpu_threads or "auto")
+    return WhisperModel(model, device="cpu", compute_type="int8",
+                        cpu_threads=cpu_threads, num_workers=1)
 
 
 # ---------------------------------------------------------------------------

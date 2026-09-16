@@ -2,6 +2,8 @@
 
 import tomllib
 
+import pytest
+
 from alpha import paths
 from alpha.config import parse_config
 from alpha.credentials import _toml_dump
@@ -196,3 +198,139 @@ def test_provider_error_messages_are_actionable():
 
     assert _is_html(R("text/html", "<!doctypehtml><title>405</title>"))
     assert not _is_html(R("application/json", '{"choices": []}'))
+
+
+def test_resolve_pretrained_model_accepts_trained_models(tmp_path, monkeypatch):
+    """A trained wake word must be usable, not just installable.
+
+    Regression: config validation let a custom model through when
+    ~/.local/share/alpha/wakewords/<name>.onnx existed, but PretrainedWake then
+    raised ValueError unless the name was in BUNDLED_WAKEWORDS — so the
+    documented train -> --install -> use flow passed validation and crashed the
+    daemon at startup.
+    """
+    from alpha import wake as wake_mod
+
+    monkeypatch.setattr(wake_mod.paths, "WAKEWORD_DIR", tmp_path)
+
+    # bundled names pass through untouched (openWakeWord resolves them)
+    for name in wake_mod.BUNDLED_WAKEWORDS:
+        assert wake_mod.resolve_pretrained_model(name) == name
+
+    # a trained model resolves to its file path
+    trained = tmp_path / "hey_alpha.onnx"
+    trained.write_bytes(b"not a real model")
+    assert wake_mod.resolve_pretrained_model("hey_alpha") == str(trained)
+
+    # a .tflite-only model is found too
+    (tmp_path / "hey_beta.tflite").write_bytes(b"x")
+    assert wake_mod.resolve_pretrained_model("hey_beta").endswith("hey_beta.tflite")
+
+    # unknown names still fail, with an actionable message
+    with pytest.raises(ValueError) as e:
+        wake_mod.resolve_pretrained_model("nope")
+    msg = str(e.value)
+    assert "nope" in msg and "train-wake-word.py" in msg and "kws" in msg
+
+
+def test_wake_gate_needs_both_loudness_and_speech():
+    """Regression context: every window the gate lets through costs a whisper
+    decode at a fixed ~0.65 s of CPU (whisper pads to a 30 s mel chunk), so the
+    gate is the main throttle on background CPU in a noisy room.
+    """
+    from alpha.listen import KWS_MIN_SPEECH_RATIO, wake_gate_opens
+
+    floor = 120.0
+    assert KWS_MIN_SPEECH_RATIO == 0.15
+
+    # loud enough and speech-like -> decode
+    assert wake_gate_opens(0.5, 2000.0, floor)
+    # loud but the VAD says it is not speech (a door slam, music) -> skip
+    assert not wake_gate_opens(0.05, 9000.0, floor)
+    # speech-like but only room tone -> skip
+    assert not wake_gate_opens(0.9, 40.0, floor)
+    # exactly on both boundaries counts as open (>=, not >)
+    assert wake_gate_opens(KWS_MIN_SPEECH_RATIO, floor, floor)
+    # a higher floor (noisy room) closes it
+    assert not wake_gate_opens(0.9, 400.0, min_rms=600.0)
+
+
+def test_rms_matches_known_signals():
+    import numpy as np
+
+    from alpha.listen import rms
+
+    assert rms(np.zeros(0, dtype=np.int16)) == 0.0
+    assert rms(np.zeros(16000, dtype=np.int16)) == 0.0
+    assert rms(np.full(1000, 32767, dtype=np.int16)) == 32767.0
+    # a full-scale square wave of half 1s and half -1s still has rms 1.0*scale
+    sq = np.array([1000, -1000] * 500, dtype=np.int16)
+    assert abs(rms(sq) - 1000.0) < 1e-6
+    # int16 units, NOT normalised to 0..1 (a float conversion bug would give 1.0)
+    assert rms(np.full(1000, 1000, dtype=np.int16)) > 100.0
+
+
+def test_min_rms_is_configurable_and_validated():
+    from alpha.config import parse_config
+
+    assert parse_config({}).assistant.wake_word.min_rms == 300.0
+    cfg = parse_config({"assistant": {"wake_word": {"min_rms": 450}}})
+    assert cfg.assistant.wake_word.min_rms == 450.0
+    assert isinstance(cfg.assistant.wake_word.min_rms, float)
+
+
+def test_trained_wakeword_installs_where_config_looks(tmp_path, monkeypatch):
+    """The install destination and the config lookup must be the same directory.
+
+    Regression: --install wrote to ~/.local/share/alpha/models/ while config
+    validation (and the loader) looked in ~/.local/share/alpha/wakewords/, so
+    following the documented flow produced
+    "unknown pretrained wake word model 'hey_alpha'" on the next start.
+    """
+    from alpha import paths
+
+    assert paths.WAKEWORD_DIR.name == "wakewords"
+    assert paths.MODEL_DIR.name == "models"
+    assert paths.WAKEWORD_DIR != paths.MODEL_DIR
+
+
+    from alpha import wake as wake_mod
+
+    monkeypatch.setattr(wake_mod.paths, "WAKEWORD_DIR", tmp_path)
+    installed = tmp_path / "hey_alpha.onnx"
+    installed.write_bytes(b"stub")
+    # the loader must find exactly what an install into WAKEWORD_DIR produces
+    assert wake_mod.resolve_pretrained_model("hey_alpha") == str(installed)
+
+
+def test_noise_floor_adapts_to_room_tone_but_never_below_the_absolute_minimum():
+    """The wake gate must not be fooled by a fixed floor, nor chase itself down.
+
+    Measured motivation (docs/PERFORMANCE.md): room tone 280-955 with speech
+    ~2000, and silero called noise "speech" often enough that the wake path paid
+    ~0.65 s of CPU per wasted decode, ~31 times in 6 minutes.
+    """
+    from alpha.listen import NoiseFloor, wake_gate_opens
+
+    n = NoiseFloor(floor_min=300.0)
+    assert n.room_tone == 0.0            # nothing observed yet
+    assert n.threshold() == 300.0        # so the configured floor applies
+
+    # a silent room must NOT normalise its way down to nothing
+    for _ in range(50):
+        n.observe(10.0)
+    assert n.threshold() == 300.0
+
+    # intermittent speech over a noisy floor: the low percentile must ignore the
+    # loud windows, so the floor tracks room tone (400), not speech (3000)
+    n = NoiseFloor(floor_min=300.0)
+    for i in range(100):
+        n.observe(3000.0 if i % 10 == 0 else 400.0)
+    assert 380 <= n.room_tone <= 420
+    floor = n.threshold()
+    assert 760 <= floor <= 840          # 2x room tone
+
+    # consequences: the noise is rejected, a normal voice still gets through
+    assert not wake_gate_opens(0.5, 400.0, floor)
+    assert wake_gate_opens(0.5, 900.0, floor)
+    assert wake_gate_opens(0.5, 2500.0, floor)
