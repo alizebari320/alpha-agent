@@ -47,16 +47,24 @@ def unit_path() -> Path:
 
 
 def render(exec_start: str | None = None, memory_max_mb: int | None = None,
-           repo_dir: Path | None = None) -> str:
-    """Build the unit text from the template plus the config's resource budget."""
-    from .config import load_config
+           repo_dir: Path | None = None, config=None) -> str:
+    """Build the unit text from the template plus the config's resource budget.
 
-    cfg = load_config()
+    `config` is injectable, and is only loaded from disk when a value we need is
+    missing. Both matter: reading the developer's real
+    `~/.config/alpha/config.toml` unconditionally made the unit tests fail on a
+    clean machine (ConfigError, exit 1 in CI) and would have made them pass or
+    fail depending on whose laptop ran them.
+    """
     repo = repo_dir or Path(__file__).resolve().parent.parent
     if exec_start is None:
         exec_start = str(repo / ".venv" / "bin" / "alpha")
     if memory_max_mb is None:
-        memory_max_mb = cfg.resources.memory_max_mb
+        if config is None:
+            from .config import load_config
+
+            config = load_config()
+        memory_max_mb = config.resources.memory_max_mb
 
     text = template_path().read_text()
     text = re.sub(r"^ExecStart=.*$", f"ExecStart={exec_start}", text, flags=re.M)

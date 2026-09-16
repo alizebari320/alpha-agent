@@ -38,9 +38,32 @@ def test_render_mirrors_memory_max(tmp_path):
 
 
 def test_render_uses_config_default():
-    """With no explicit limit, the value comes from config (2048 by default)."""
-    text = unit_mod.render()
+    """With no explicit limit, the value comes from config (2048 by default).
+
+    The config is passed in, never read from disk: reading the developer's real
+    ~/.config/alpha/config.toml made this test fail on a clean machine (there is
+    no config there) and pass or fail depending on whose machine ran it.
+    """
+    from alpha.config import Config
+
+    text = unit_mod.render(config=Config())
     assert "MemoryMax=2048M" in text
+
+
+def test_render_honours_a_custom_config_limit():
+    """The mirror must be real: change the config, change the unit."""
+    from alpha.config import Config, ResourceConfig
+
+    cfg = Config()
+    cfg.resources = ResourceConfig(memory_max_mb=3072)
+    assert "MemoryMax=3072M" in unit_mod.render(config=cfg)
+
+
+def test_render_needs_no_config_file_when_both_values_are_given(tmp_path):
+    """An explicit budget must not touch the disk at all."""
+    text = unit_mod.render(exec_start="/x/alpha", memory_max_mb=512,
+                           repo_dir=tmp_path)
+    assert "MemoryMax=512M" in text
 
 
 def test_deployed_memory_max_reads_the_unit(tmp_path, monkeypatch):
