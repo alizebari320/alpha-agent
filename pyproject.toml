@@ -1,6 +1,6 @@
 [project]
 name = "alpha-agent"
-version = "0.1.1"
+version = "0.1.2"
 description = "Voice-driven computer-use agent for Fedora Linux. Offline wake word + STT/TTS, local planning, real desktop control."
 readme = "README.md"
 license = { file = "LICENSE" }
