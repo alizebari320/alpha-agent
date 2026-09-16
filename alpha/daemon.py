@@ -206,7 +206,10 @@ class Daemon:
             if not text:
                 return {"ok": False, "error": "empty request"}
             if self._busy:
-                return {"ok": False, "error": "busy"}
+                # §11.5: say what to do about it, not just "busy".
+                return {"ok": False, "error":
+                        "Alpha is already working on another request — wait for it "
+                        "to finish, or run `alpha abort` first"}
             self._busy = True
             try:
                 answer = await self._run_request(text, speak=not msg.get("no_speak"))

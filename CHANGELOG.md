@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The abort path was dead while Alpha was acting** — the most serious bug
+  found so far. `provider.send()` is a synchronous httpx call and it ran inline
+  in the daemon's event loop, so for the whole of every model round-trip (up to
+  120 s) the control socket could not be served: `alpha state`, `alpha mute` and
+  **`alpha abort`** all died with *daemon not reachable: timed out*. Ctrl+Alt+Q
+  arrives over that same socket, so the global abort — the one thing the spec
+  insists must work before any input is injected — was dead exactly while Alpha
+  was touching the desktop. Both model calls now run via `asyncio.to_thread`;
+  the event loop keeps turning and the abort lands mid-request. Regression test
+  is a liveness probe (a heartbeat must keep beating while a deliberately slow
+  provider is in flight): **0 beats** before the fix, passing after.
+  Verified live: while a request was in flight, `alpha state` answered
+  `state=acting` on six consecutive polls, and `alpha abort` mid-request
+  returned *aborted*, drove the daemon back to `idle` and logged
+  `ABORT requested (ctl)` — with the in-flight request answering "Aborted."
+  instead of running its queued action.
+- `error: busy` is now *"Alpha is already working on another request — wait for
+  it to finish, or run `alpha abort` first"* (§11.5).
+
 ## [0.1.1] - 2026-09-16
 
 ### Fixed

@@ -311,7 +311,13 @@ class AgentLoop:
              + "Produce a short numbered plan (max 6 steps) of concrete actions. "
                "Reply with ONLY the numbered list, no commentary."},
         ]
-        plan_resp = self.planner.send(plan_messages, tools=None, max_tokens=512)
+        # Off the event loop: `send()` is a synchronous httpx call that can take
+        # a minute (free-tier latency, 120 s timeout). Running it inline froze the
+        # daemon's event loop, so the control socket could not answer — and the
+        # control socket is how Ctrl+Alt+Q / `alpha abort` arrives. The abort
+        # path must never be dead while Alpha is acting (§10).
+        plan_resp = await asyncio.to_thread(
+            self.planner.send, plan_messages, tools=None, max_tokens=512)
         self.cost.record(self.cfg.llm.planner.model, plan_resp.usage, 0.0)
         plan_text = plan_resp.text.strip()
         log.info("plan: %s", plan_text[:300])
@@ -352,7 +358,8 @@ class AgentLoop:
                     OpenAICompatibleProvider.image_block(obs.png_b64))
             history.append({"role": "user", "content": user_content})
 
-            resp = self.executor.send(
+            resp = await asyncio.to_thread(
+                self.executor.send,
                 [{"role": "system", "content": sysp}, *history[-10:]],
                 tools=self.tools, max_tokens=1024)
             self.cost.record(self.cfg.llm.planner.model, resp.usage, 0.0)

@@ -344,3 +344,54 @@ def test_wait_tool_does_not_bind_asyncio_locally():
                            "element_table": "", "label_map": None})()
     loop, _ = _make_loop([])
     assert asyncio.run(loop._execute(call, obs)) == "ok"
+
+
+@pytest.mark.asyncio
+async def test_provider_call_does_not_block_the_event_loop():
+    """The control socket must keep answering while the model is thinking.
+
+    This was a real, safety-relevant bug: `provider.send()` is a synchronous
+    httpx call and it ran inline in the daemon's event loop, so during any
+    request — up to 120 s on a slow/free provider — the ctl socket could not be
+    served and every `alpha abort` / `alpha state` died with "daemon not
+    reachable: timed out". Ctrl+Alt+Q is delivered over that same socket, so the
+    global abort was dead exactly while Alpha was acting (§10).
+
+    The test is a liveness probe, not a call counter: it beats a heartbeat while
+    a deliberately slow provider is in flight and requires the heartbeat to keep
+    making progress.
+    """
+    import time
+
+    loop_mod, _d = _make_loop([])
+
+    class SlowProvider(MockProvider):
+        def send(self, messages, tools=None, max_tokens=1024, **kw):
+            time.sleep(0.6)          # stand-in for a slow model round-trip
+            return super().send(messages, tools=tools, max_tokens=max_tokens, **kw)
+
+    slow = SlowProvider([
+        "1. finish with the answer",
+        LLMResponse(tool_calls=[ToolCall(id="1", name="finish",
+                                         arguments={"answer": "done"})]),
+    ])
+    loop_mod.planner = slow
+    loop_mod.executor = slow
+
+    beats = 0
+
+    async def heartbeat():
+        nonlocal beats
+        while True:
+            await asyncio.sleep(0.02)
+            beats += 1
+
+    beat_task = asyncio.create_task(heartbeat())
+    try:
+        answer = await loop_mod.run("say done")
+    finally:
+        beat_task.cancel()
+
+    assert answer == "done"
+    # Two 0.6 s provider calls: a blocked loop would allow ~0 beats.
+    assert beats >= 20, f"event loop stalled during the provider call ({beats} beats)"
