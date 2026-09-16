@@ -41,6 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("unload", help="free the speech models (idle behaviour) and report memory use")
     sub.add_parser("abort", help="ABORT: kill any running action loop instantly (§10)")
     sub.add_parser("install-hotkeys", help="register GNOME hotkeys: Ctrl+Alt+M mute, Ctrl+Alt+Q abort")
+    sub.add_parser("vision-test", help="check the vision layers: screenshot, AT-SPI, password lock")
 
     ask = sub.add_parser("ask", help="run one request through the full agent loop (text mode)")
     ask.add_argument("request", nargs="+", help="what you want Alpha to do")
@@ -195,6 +196,19 @@ def _cmd_ctl(cmd: str) -> int:
               f"assistant={reply.get('assistant')}")
     elif cmd == "abort":
         print("aborted — any running action loop was killed")
+    elif cmd == "vision-test":
+        shot = reply.get("shot")
+        n = reply.get("atspi_elements", 0)
+        locked = reply.get("password_locked")
+        print(f"screenshot : {shot if shot else 'UNAVAILABLE'}")
+        if not shot:
+            print("             -> click Share in the HUD to grant the portal ScreenCast;")
+            print("                see docs/TROUBLESHOOTING.md#i-want-the-full-vision-loop")
+        print(f"atspi      : {n} element(s) from the focused window")
+        if n == 0:
+            print("             -> no focused window, or the accessibility bus is not up")
+        print(f"password   : {'LOCKED (input is refused)' if locked else 'not password-locked'}")
+        return 0 if shot or n else 1
     elif cmd in ("warm", "unload"):
         print(f"daemon={reply.get('rss_mb', 0):.1f} MiB  "
               f"hud={reply.get('children_mb', 0):.1f} MiB  "
@@ -316,8 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         return _cmd_init()
     if args.command in ("mute", "unmute", "mute-toggle", "state", "abort",
-                        "warm", "unload"):
-        return _cmd_ctl(args.command)
+                        "warm", "unload", "vision-test"):
         return _cmd_ctl(args.command)
     if args.command == "ask":
         return _cmd_ask(" ".join(args.request), speak=not args.no_speak)

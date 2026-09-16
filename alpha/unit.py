@@ -20,7 +20,25 @@ from . import paths
 log = logging.getLogger(__name__)
 
 UNIT_NAME = "alpha.service"
-TEMPLATE = Path(__file__).resolve().parent.parent / "scripts" / "alpha.service"
+
+# The unit template ships INSIDE the package: `scripts/alpha.service` is not
+# present in a wheel/sdist install, so reading it from the repo root made
+# `alpha install-service` raise FileNotFoundError for anyone who installed
+# Alpha with pip/uv instead of git-cloning it.
+PACKAGED_TEMPLATE = Path(__file__).resolve().parent / "templates" / UNIT_NAME
+REPO_TEMPLATE = Path(__file__).resolve().parent.parent / "scripts" / UNIT_NAME
+
+
+def template_path() -> Path:
+    """Where the unit template lives, or an actionable error if it is missing."""
+    if PACKAGED_TEMPLATE.is_file():
+        return PACKAGED_TEMPLATE
+    if REPO_TEMPLATE.is_file():  # editable/dev checkout before packaging moved it
+        return REPO_TEMPLATE
+    raise FileNotFoundError(
+        f"systemd unit template not found (looked in {PACKAGED_TEMPLATE} and "
+        f"{REPO_TEMPLATE}); the installation looks incomplete, try reinstalling"
+    )
 
 
 def unit_path() -> Path:
@@ -39,7 +57,7 @@ def render(exec_start: str | None = None, memory_max_mb: int | None = None,
     if memory_max_mb is None:
         memory_max_mb = cfg.resources.memory_max_mb
 
-    text = TEMPLATE.read_text()
+    text = template_path().read_text()
     text = re.sub(r"^ExecStart=.*$", f"ExecStart={exec_start}", text, flags=re.M)
     text = re.sub(r"^WorkingDirectory=.*$", f"WorkingDirectory={repo}", text, flags=re.M)
     text = re.sub(r"^MemoryMax=.*$", f"MemoryMax={int(memory_max_mb)}M", text, flags=re.M)

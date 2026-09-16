@@ -59,8 +59,24 @@ degrades gracefully to text-only grounding via the accessibility tree. Read
 - `alpha ask "…"` drives the identical plan/act/verify path with no microphone.
 - uinput injection is **pixel-exact** on Wayland: a GTK4 probe window received
   motion, click, drag, typed text and `ctrl+l` at the coordinates requested.
+- **Application launching works**: asked in text mode to open Firefox, the agent
+  ran `bash("pgrep -x firefox")` then `bash("firefox")` (both in the audit log)
+  and Firefox came up. This was *broken* until the fix in `f4165ec` — a stray
+  `import asyncio` inside the executor made every bash call raise
+  `UnboundLocalError`, so GUI launching silently failed and the planner just
+  retried. Two regression tests now cover it.
 - The abort hotkey kills a running action loop within one step.
-- 53 unit tests pass (`uv run pytest -q`).
+- 60 unit tests pass (`uv run pytest -q`), ruff clean.
+
+**Not verified here** (stated plainly so you know what you are trusting):
+
+- Screenshot grounding with a real mouse click on a UI element. Injection and
+  vision are each tested on their own, but this machine's current free model
+  rejects images and the portal share prompt was never approved, so the loop
+  has only ever run text-only session-to-session. See
+  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#i-want-the-full-vision-loop).
+- The trained custom wake word. The training pipeline is wired up and checked,
+  but training it needs a GPU/Colab run you have to kick off yourself.
 
 ---
 

@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - name: Install (dev extras)
+        run: uv pip install --system -e ".[dev]"
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format check (non-blocking, informational)
+        run: ruff format --check . || true
+
+  test:
+    name: pytest (Python 3.11)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (dev extras)
+        run: uv pip install --system -e ".[dev]"
+      - name: Unit tests
+        # These need no network, no microphone, no display, no root and no
+        # /dev/uinput: every hardware path is behind a seam that tests mock.
+        run: pytest -q
+      - name: Verify the CLI entry point is importable and self-describing
+        run: |
+          python -m alpha --version
+          python -m alpha --help
+
+  package:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - run: uv build
+      - name: The wheel must ship the unit template but no key, model or state
+        run: |
+          python - <<'PY'
+          import glob, zipfile, sys
+          required = ["alpha/templates/alpha.service"]
+          bad = []
+          seen = set()
+          for whl in glob.glob("dist/*.whl"):
+              with zipfile.ZipFile(whl) as z:
+                  names = z.namelist()
+                  seen.update(names)
+                  for name in names:
+                      low = name.lower()
+                      if any(x in low for x in (".onnx", ".tflite", ".pt", "config.toml",
+                                                "actions.jsonl", "spend.jsonl")):
+                          bad.append(name)
+          if bad:
+              print("unexpected files in wheel:", bad)
+              sys.exit(1)
+          missing = [r for r in required if r not in seen]
+          if missing:
+              # Caught for real once: unit.py read scripts/alpha.service from the
+              # repo root, so `alpha install-service` raised FileNotFoundError on
+              # every wheel install.
+              print("required package data missing from wheel:", missing)
+              sys.exit(1)
+          print("wheel contents look right")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*

@@ -11,6 +11,20 @@ from pathlib import Path
 from alpha import unit as unit_mod
 
 
+def test_template_ships_inside_the_package():
+    """The unit template must be importable as a package resource.
+
+    Regression: reading `scripts/alpha.service` from the repo root meant
+    `alpha install-service` crashed with FileNotFoundError on any wheel install.
+    """
+    assert unit_mod.PACKAGED_TEMPLATE.is_file(), (
+        "alpha/templates/alpha.service is missing from the package; "
+        "alpha install-service would fail on a pip/uv install"
+    )
+    assert unit_mod.template_path() == unit_mod.PACKAGED_TEMPLATE
+    assert "[Service]" in unit_mod.template_path().read_text()
+
+
 def test_render_mirrors_memory_max(tmp_path):
     text = unit_mod.render(exec_start="/opt/alpha/venv/bin/alpha",
                            memory_max_mb=1536, repo_dir=Path("/opt/alpha"))

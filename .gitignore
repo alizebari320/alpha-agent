@@ -12,3 +12,8 @@
 
 # opencode credential dumps used during development
 /opencode-dump*/
+
+# build + release artifacts
+dist/
+build/
+*.egg-info/

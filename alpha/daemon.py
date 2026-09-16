@@ -229,11 +229,16 @@ class Daemon:
             self.worker.resolve(msg)
             return None  # no reply needed on ctl
         if cmd == "vision-test":
-            # manual M5 check: screenshot + atspi + password lock
+            # manual M5 check: screenshot + atspi + password lock.
+            # `ok` means "the request was answered", NOT "a screenshot was
+            # captured" — without that distinction a missing portal permission
+            # surfaced to the user as "daemon not reachable", which sent people
+            # hunting for a socket bug instead of clicking Share.
             shot = await self.vision.screenshot()
             els = await self.vision.atspi()
             locked = await self.vision.check_password_lock(els)
-            return {"ok": bool(shot), "shot": f"{shot.width}x{shot.height}" if shot else None,
+            return {"ok": True, "screenshot": bool(shot),
+                    "shot": f"{shot.width}x{shot.height}" if shot else None,
                     "atspi_elements": len(els), "password_locked": locked}
         if cmd == "set-geom":
             # HUD reports the real monitor layout (GTK sees what the

@@ -79,11 +79,11 @@ if [ -f "$HOME/.config/alpha/config.toml" ] && [ -x "$REPO_DIR/.venv/bin/alpha" 
   "$REPO_DIR/.venv/bin/alpha" install-service >/dev/null 2>&1 || {
     warn "could not render the unit from config; using template defaults"
     sed "s|^ExecStart=.*|ExecStart=$REPO_DIR/.venv/bin/alpha|" \
-      "$REPO_DIR/scripts/alpha.service" > "$UNIT_DIR/alpha.service"
+      "$REPO_DIR/alpha/templates/alpha.service" > "$UNIT_DIR/alpha.service"
   }
 else
   sed "s|^ExecStart=.*|ExecStart=$REPO_DIR/.venv/bin/alpha|" \
-    "$REPO_DIR/scripts/alpha.service" > "$UNIT_DIR/alpha.service"
+    "$REPO_DIR/alpha/templates/alpha.service" > "$UNIT_DIR/alpha.service"
 fi
 
 systemctl --user daemon-reload
