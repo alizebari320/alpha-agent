@@ -22,7 +22,12 @@ dependencies = [
 [project.scripts]
 alpha = "alpha.__main__:main"
 
-[dependency-groups]
+# A real extra (not a uv-only [dependency-groups] entry): both
+# `uv pip install -e ".[dev]"` and `pip install -e ".[dev]"` must work, and
+# docs/INSTALL.md tells contributors to use exactly that. As a dependency group
+# `.[dev]` silently installs nothing but the runtime deps ("does not have an
+# extra named 'dev'"), which is how CI spent a run failing with exit 127.
+[project.optional-dependencies]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=1.4.0",
