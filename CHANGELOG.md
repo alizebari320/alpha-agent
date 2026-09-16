@@ -6,8 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-16
+
 ### Fixed
 
+- **CI never actually ran.** Every run died before a single check: `setup-uv`'s
+  `python-version` input creates and activates `.venv` itself, so the workflow's
+  own `uv venv` failed with *Failed to create virtual environment* (exit 2). The
+  interpreter is now installed explicitly and the venv is ours.
+- **The `dev` extra was not an extra.** pytest/ruff sat in a uv-only
+  `[dependency-groups]` table, so `uv pip install -e ".[dev]"` — the exact
+  command `docs/INSTALL.md` gives contributors — installed nothing and warned
+  *does not have an extra named 'dev'*, after which CI's `.venv/bin/ruff` was
+  not found (exit 127). Moved to `[project.optional-dependencies]`, which works
+  with uv and plain pip alike.
+- **The unit tests read the developer's real `~/.config/alpha/config.toml`.**
+  They passed on the development machine only because that file exists there,
+  and failed on a clean runner with `ConfigError`. `unit.render()` now takes an
+  injectable config and only reads disk when it must; verified with `HOME` set to
+  an empty directory.
 - **Idle CPU in `kws` mode** — the wake gate let room noise through, so
   whisper-tiny was asked to transcribe noise roughly every 12 s (31 times in one
   6-minute stretch, answering every one with its classic hallucination set:
