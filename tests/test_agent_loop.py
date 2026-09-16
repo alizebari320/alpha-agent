@@ -49,7 +49,7 @@ class MockInput:
         self.actions.append(("rclick", x, y))
 
     def drag(self, *a):
-        self.actions.append(("drag",) + a)
+        self.actions.append(("drag", *a))
 
     def scroll(self, dx, dy):
         self.actions.append(("scroll", dx, dy))
@@ -86,11 +86,18 @@ class MockDaemon:
             return False
 
     def __init__(self):
+        import tempfile
+        from pathlib import Path as _P
+
         from alpha.config import parse_config
-        from alpha.safety.guard import SafetyGuard
+        from alpha.safety.guard import AuditLog, SafetyGuard
 
         self.cfg = parse_config({})
-        self.guard = SafetyGuard(self.cfg.safety)
+        # Point the audit log at a temp file: the real one is
+        # ~/.local/state/alpha/actions.jsonl and tests must not write to it
+        # (they did, which made live audit trails confusing to read).
+        tmp_audit = _P(tempfile.mkdtemp()) / "actions.jsonl"
+        self.guard = SafetyGuard(self.cfg.safety, audit=AuditLog(tmp_audit))
         self.vision = self._Vision()
         self.screen_size = (1920, 1080)
         self.input = MockInput()
@@ -254,7 +261,7 @@ def test_recipe_saved_on_success(tmp_path, monkeypatch):
     assert len(rs) == 1, "recipe should have been saved"
     assert rs[0].actions[0]["tool"] == "bash"
     # and the next identical request replays without an LLM (provider untouched)
-    store.match("open firefox") is not None
+    assert store.match("open firefox") is not None
 
 
 def test_recipe_match_normalization(tmp_path):
@@ -286,3 +293,54 @@ def test_password_lock_blocks():
     d.vision.check_password_lock = locked
     answer = asyncio.run(loop.run("click something"))
     assert "password" in answer.lower()
+
+
+def test_bash_tool_runs():
+    """`bash` must actually execute.
+
+    Regression: a redundant `import asyncio` inside _execute (in the `wait`
+    branch) made `asyncio` a function-local name, so the `bash` branch's
+    `asyncio.to_thread` raised UnboundLocalError and EVERY bash call failed —
+    which silently disabled the main way Alpha launches applications. This test
+    exercises the real branch with a real subprocess and no mocks on the tool.
+    """
+    loop, _ = _make_loop([])
+    call = ToolCall(id="1", name="bash", arguments={"command": "echo alpha-bash-regression"})
+    obs = type("Obs", (), {"shot_size": (1280, 720), "png_b64": None,
+                           "element_table": "", "label_map": None})()
+    out = asyncio.run(loop._execute(call, obs))
+    assert "alpha-bash-regression" in out, out
+    assert "exit=0" in out, out
+
+
+def test_wait_tool_does_not_bind_asyncio_locally():
+    """`wait` must not shadow module-level imports with a local import.
+
+    This is the compile-time half of the bug above: if anyone re-adds a local
+    `import asyncio` anywhere in _execute, the bash branch breaks again. Checked
+    against the source so the failure message points at the real cause.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from alpha.brain import loop as loop_mod
+
+    src = textwrap.dedent(inspect.getsource(loop_mod.AgentLoop._execute))
+    tree = ast.parse(src)
+    local_imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert "asyncio" not in local_imports, (
+        "a local `import asyncio` inside _execute makes asyncio function-local "
+        "and breaks asyncio.to_thread in the bash branch"
+    )
+
+    call = ToolCall(id="2", name="wait", arguments={"ms": 5})
+    obs = type("Obs", (), {"shot_size": (1280, 720), "png_b64": None,
+                           "element_table": "", "label_map": None})()
+    loop, _ = _make_loop([])
+    assert asyncio.run(loop._execute(call, obs)) == "ok"

@@ -17,7 +17,8 @@ RestartSec=3
 # Resource budget (§9): deprioritize vs. the desktop, hard memory ceiling.
 Nice=5
 CPUWeight=60
-MemoryMax=1024M
+# Mirrors memory_max_mb from config.toml; `alpha install-service` rewrites this.
+MemoryMax=2048M
 
 [Install]
 WantedBy=default.target

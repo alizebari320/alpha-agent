@@ -127,7 +127,7 @@ class _EventFeed:
         self._stop = False
 
         def pump() -> None:
-            assert probe.stdout is not None
+            assert probe.stdout is not None  # noqa: S101 - probe script
             for line in probe.stdout:
                 with self._lock:
                     self._lines.append(line.strip())

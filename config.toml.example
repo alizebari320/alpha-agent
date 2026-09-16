@@ -94,4 +94,6 @@ bash_allowlist = ["firefox", "google-chrome", "chromium", "nautilus",
 
 [resources]
 idle_unload_s = 120                   # unload Whisper/piper after this many idle seconds
-memory_max_mb = 1024                  # mirrored into the systemd MemoryMax
+memory_max_mb = 2048                  # mirrored into the systemd MemoryMax.
+                                      # Measured warm footprint is ~910 MiB (daemon
+                                      # with whisper-small + piper, plus the GTK HUD).

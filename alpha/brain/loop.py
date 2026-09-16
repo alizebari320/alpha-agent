@@ -48,7 +48,7 @@ def _run_bash(command: str, timeout: float = 30.0) -> str:
     is_gui = base in GUI_LAUNCHERS
     if is_gui:
         try:
-            p = subprocess.Popen(
+            p = subprocess.Popen(  # noqa: S602 - the command IS the tool's input
                 command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )
@@ -56,15 +56,17 @@ def _run_bash(command: str, timeout: float = 30.0) -> str:
             alive = p.poll() is None
             return (f"launched in background (pid={p.pid}, running={alive})"
                     if alive else f"process exited immediately (exit={p.returncode})")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return f"failed to launch: {e}"
     try:
-        r = subprocess.run(command, shell=True, capture_output=True, text=True,
+        # shell=True is the point: the planner emits a shell command, and the
+        # guard (allowlist + destructive regex) has already vetted it.
+        r = subprocess.run(command, shell=True, capture_output=True, text=True,  # noqa: S602
                            timeout=timeout)
         return f"exit={r.returncode} " + (r.stdout or r.stderr or "")[:300]
     except subprocess.TimeoutExpired:
         return f"timed out after {timeout:.0f}s (command may still be running)"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return f"failed: {e}"
 
 
@@ -130,7 +132,7 @@ class AgentLoop:
         # providers: planner primary + fallback chain (§3)
         primary = OpenAICompatibleProvider(cfg.llm.planner)
         fallbacks = [OpenAICompatibleProvider(fb) for fb in cfg.llm.fallbacks]
-        self.planner = FallbackChain([primary] + fallbacks)
+        self.planner = FallbackChain([primary, *fallbacks])
         self.executor = self.planner
         self.tools = tool_schemas()
         self.cost = CostGuard(cfg)
@@ -223,15 +225,18 @@ class AgentLoop:
             daemon._get_input().scroll(int(args.get("dx", 0) or 0), int(args.get("dy", 0) or 0))
         elif name == "bash":
             command = str(args.get("command", ""))
-            allowed, reason = guard.check_action("bash", {"command": command})
+            allowed, _reason = guard.check_action("bash", {"command": command})
             if not allowed:
                 ok = await self._confirm_spoken(f"Should I run the command {command}?")
                 if not ok:
                     return "user declined; do not retry this command"
             result = await asyncio.to_thread(_run_bash, command)
         elif name == "wait":
-            import asyncio
-
+            # NB: `asyncio` is imported at module level. A local `import asyncio`
+            # here would make the name function-local for the WHOLE of _execute,
+            # so the `bash` branch above (asyncio.to_thread) raised
+            # UnboundLocalError — every bash call failed. Do not re-add it; the
+            # regression is covered by tests/test_agent_loop.py::test_bash_tool_runs.
             await asyncio.sleep(min(10.0, float(args.get("ms", 200)) / 1000.0))
         else:
             return f"error: unknown tool {name}"
@@ -287,7 +292,7 @@ class AgentLoop:
         from .blender import is_blender_request, run_blender_script
 
         if is_blender_request(request):
-            ok, answer, preview = run_blender_script(request)
+            _ok, answer, _preview = run_blender_script(request)
             return answer
 
         vision = self._provider_vision()
@@ -321,7 +326,7 @@ class AgentLoop:
         self._recipe_actions = []  # executed actions -> recipe cache (§7)
         self._recipe_request = request
 
-        for step_idx in range(MAX_STEPS):
+        for _step_idx in range(MAX_STEPS):
             guard.check_abort()  # AbortRequested propagates to daemon
             if self.cost.over_limit():
                 answer = "I've hit my daily spending cap mid-task."
@@ -348,7 +353,7 @@ class AgentLoop:
             history.append({"role": "user", "content": user_content})
 
             resp = self.executor.send(
-                [{"role": "system", "content": sysp}] + history[-10:],
+                [{"role": "system", "content": sysp}, *history[-10:]],
                 tools=self.tools, max_tokens=1024)
             self.cost.record(self.cfg.llm.planner.model, resp.usage, 0.0)
 

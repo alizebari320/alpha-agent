@@ -117,7 +117,8 @@ class SafetyConfig:
 @dataclass
 class ResourceConfig:
     idle_unload_s: int = 120
-    memory_max_mb: int = 1024  # systemd MemoryMax safety net
+    memory_max_mb: int = 2048  # systemd MemoryMax safety net (measured warm
+                               # footprint is ~910 MiB: whisper-small + piper + GTK HUD)
 
 
 @dataclass
@@ -243,7 +244,7 @@ def parse_config(data: dict[str, Any]) -> Config:
     r = _get(data, "resources", default={}) or {}
     cfg.resources = ResourceConfig(
         idle_unload_s=int(r.get("idle_unload_s", 120)),
-        memory_max_mb=int(r.get("memory_max_mb", 1024)),
+        memory_max_mb=int(r.get("memory_max_mb", 2048)),
     )
 
     return cfg

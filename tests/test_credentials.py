@@ -5,6 +5,7 @@ import json
 import pytest
 
 from alpha.credentials import discover_opencode
+from alpha.log import redact
 
 
 @pytest.fixture
@@ -89,8 +90,6 @@ def test_env_var_key_resolution(tmp_path, monkeypatch):
     result = discover_opencode(config_path=config, auth_path=tmp_path / "none.json")
     assert result.providers[0].api_key == "sk-FROM_ENV"
 
-
-from alpha.log import redact
 
 
 def test_redact_keys():

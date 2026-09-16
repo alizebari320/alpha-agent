@@ -72,9 +72,19 @@ PY
 log "installing systemd --user unit"
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
-# Point ExecStart at the real venv binary inside this checkout.
-sed "s|^ExecStart=.*|ExecStart=$REPO_DIR/.venv/bin/alpha|" \
-  "$REPO_DIR/scripts/alpha.service" > "$UNIT_DIR/alpha.service"
+# Point ExecStart at the real venv binary and mirror memory_max_mb from
+# config.toml into MemoryMax. If config.toml does not exist yet (`alpha init`
+# creates it), fall back to the template defaults.
+if [ -f "$HOME/.config/alpha/config.toml" ] && [ -x "$REPO_DIR/.venv/bin/alpha" ]; then
+  "$REPO_DIR/.venv/bin/alpha" install-service >/dev/null 2>&1 || {
+    warn "could not render the unit from config; using template defaults"
+    sed "s|^ExecStart=.*|ExecStart=$REPO_DIR/.venv/bin/alpha|" \
+      "$REPO_DIR/scripts/alpha.service" > "$UNIT_DIR/alpha.service"
+  }
+else
+  sed "s|^ExecStart=.*|ExecStart=$REPO_DIR/.venv/bin/alpha|" \
+    "$REPO_DIR/scripts/alpha.service" > "$UNIT_DIR/alpha.service"
+fi
 
 systemctl --user daemon-reload
 systemctl --user enable --now alpha || warn "could not start service; try: systemctl --user start alpha"

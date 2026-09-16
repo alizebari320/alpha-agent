@@ -103,7 +103,9 @@ class Mic:
         released (used by MUTE — §10), so nothing keeps the mic lit."""
         if not self._running:
             return
-        assert self._stream is not None
+        if self._stream is None:  # pragma: no cover - defensive, stream is set on open
+            log.warning("stop() called with no open stream")
+            return
         self._stream.stop()
         if release_device:
             self._stream.close()

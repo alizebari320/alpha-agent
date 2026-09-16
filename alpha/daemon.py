@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import time
-from enum import Enum
+from enum import StrEnum
 
 import numpy as np
 
@@ -30,7 +31,7 @@ from .ipc import CTL_SOCK, HUD_SOCK, CtlServer, LineServer, spawn_hud
 log = logging.getLogger(__name__)
 
 
-class State(str, Enum):
+class State(StrEnum):
     IDLE = "idle"
     LISTENING = "listening"
     THINKING = "thinking"
@@ -73,6 +74,10 @@ class Daemon:
         self._busy = False
         self._muted = False
         self._agent = None  # lazy AgentLoop (M6)
+
+        # Fire-and-forget tasks (sounds, HUD re-spawn) are held here so the
+        # event loop cannot garbage-collect them mid-flight.
+        self._bg_tasks: set[asyncio.Task] = set()
 
         # IPC (HUD + control socket)
         self.hud = LineServer(HUD_SOCK)
@@ -146,13 +151,15 @@ class Daemon:
         """Idle timeout: free the REQUEST transcriber + piper (§9).
 
         The wake matcher (whisper-tiny or openwakeword) stays resident — per
-        the spec, only the wake-word model may live at idle."""
+        the spec, only the wake-word model may live at idle.
+        """
         if self._stt is not None:
             self._stt.unload()
             self._stt = None
         if self._tts is not None:
             self._tts.unload()
             self._tts = None
+        _release_free_memory()
         log.info("idle unload: freed whisper/piper (wake matcher stays resident)")
 
     # ---------------- mute (§10: the mic is genuinely RELEASED) ------------
@@ -178,7 +185,11 @@ class Daemon:
             self._busy = False
             self.transition(State.IDLE)
             pcm, sr = error_sound()
-            asyncio.create_task(asyncio.to_thread(self._play_and_wait, pcm, sr))
+            # Keep a strong reference: a bare create_task can be garbage
+            # collected mid-flight (RUF006), which would cut the sound off.
+            self._bg_tasks.add(task := asyncio.create_task(
+                asyncio.to_thread(self._play_and_wait, pcm, sr)))
+            task.add_done_callback(self._bg_tasks.discard)
             return {"ok": True, "aborted": True}
         if cmd == "ask":
             # text mode (`alpha ask "..."`): the full plan+act path with no mic,
@@ -195,6 +206,24 @@ class Daemon:
                 self._busy = False
                 self.transition(State.IDLE)
             return {"ok": True, "answer": answer}
+        if cmd == "warm":
+            # Pre-load the request models so the first request is fast, and so
+            # the RAM table in docs/PERFORMANCE.md can be measured honestly.
+            before = _rss_mb()
+
+            def _load_all() -> None:
+                self._get_stt().preload()
+                self._get_tts().preload()
+                self._get_input()
+                self._get_recorder()
+
+            await asyncio.to_thread(_load_all)
+            self._last_busy = time.time()
+            return {"ok": True, "rss_mb": _rss_mb(), "children_mb": _children_rss_mb(),
+                    "delta_mb": _rss_mb() - before}
+        if cmd == "unload":
+            await asyncio.to_thread(self._unload_heavy)
+            return {"ok": True, "rss_mb": _rss_mb(), "children_mb": _children_rss_mb()}
         if cmd == "res":
             # vision worker reply (correlated by id)
             self.worker.resolve(msg)
@@ -471,6 +500,51 @@ class Daemon:
         await asyncio.to_thread(self._play_and_wait, pcm, sr)
         await asyncio.to_thread(self._say, msg)
         self._hud_state(msg)
+
+
+
+def _release_free_memory() -> None:
+    """Give freed arenas back to the OS.
+
+    Dropping the last reference to a whisper model does NOT lower RSS: glibc
+    keeps the freed arenas and onnxruntime keeps its own pool (measured: an
+    unload that changed nothing). malloc_trim hands them back, which is what
+    makes the idle-unload promise in the spec actually true.
+    """
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
+def _proc_rss_mb(pid: int) -> float:
+    """Resident set size of one process in MiB (0.0 if it is gone)."""
+    try:
+        with open(f"/proc/{pid}/statm") as f:
+            pages = int(f.read().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def _rss_mb() -> float:
+    """Resident set size of this daemon in MiB."""
+    return _proc_rss_mb(os.getpid())
+
+
+def _children_rss_mb() -> float:
+    """Combined RSS of our child processes (the GTK HUD) in MiB."""
+    total = 0.0
+    try:
+        with open(f"/proc/{os.getpid()}/task/{os.getpid()}/children") as f:
+            for cpid in f.read().split():
+                total += _proc_rss_mb(int(cpid))
+    except OSError:
+        pass
+    return total
 
 
 async def main_async() -> int:

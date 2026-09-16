@@ -43,6 +43,10 @@ class SpeakerTTS:
             log.info("piper voice loaded: %s", voice_id)
         return self._voices[voice_id]
 
+    def preload(self) -> None:
+        """Load the English voice now (Arabic loads on first Arabic reply)."""
+        self._get_voice(self.voice_id)
+
     def unload(self) -> None:
         self._voices.clear()
         log.info("piper voices unloaded")

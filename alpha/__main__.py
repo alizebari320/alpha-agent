@@ -30,11 +30,15 @@ def _build_parser() -> argparse.ArgumentParser:
     d.add_argument("--no-network", action="store_true", help="skip the API reachability check")
 
     sub.add_parser("init", help="first-run wizard (import credentials, set name)")
+    sub.add_parser("models", help="download the speech models now (~250 MB, one time)")
+    sub.add_parser("install-service", help="(re)generate the systemd unit from config.toml")
 
     sub.add_parser("mute", help="mute the running daemon (releases the mic)")
     sub.add_parser("unmute", help="unmute the running daemon")
     sub.add_parser("mute-toggle", help="toggle mute on the running daemon")
     sub.add_parser("state", help="query the running daemon's state")
+    sub.add_parser("warm", help="pre-load the speech models and report memory use")
+    sub.add_parser("unload", help="free the speech models (idle behaviour) and report memory use")
     sub.add_parser("abort", help="ABORT: kill any running action loop instantly (§10)")
     sub.add_parser("install-hotkeys", help="register GNOME hotkeys: Ctrl+Alt+M mute, Ctrl+Alt+Q abort")
 
@@ -101,6 +105,51 @@ def _cmd_doctor(network: bool) -> int:
     return doctor_main(cfg, network=network)
 
 
+def _cmd_models() -> int:
+    """One-time model download with visible progress (spec §9).
+
+    Everything is fetched from public release URLs over HTTPS and cached under
+    ~/.local/share/alpha/models; nothing is uploaded.
+    """
+    from . import models
+    from .config import load_config
+
+    paths.ensure_dirs()
+    cfg = load_config()
+    whisper = models.pick_whisper_model(cfg.stt.model)
+    print(f"whisper model : {whisper}")
+    total_before = sum(f.stat().st_size for f in paths.DATA_DIR.rglob("*") if f.is_file())
+    try:
+        models.ensure_whisper(whisper)
+        print("  ✓ whisper ready")
+    except Exception as e:
+        print(f"  ✗ whisper failed: {e}")
+    for voice in {cfg.tts.voice, cfg.tts.arabic_voice}:
+        try:
+            onnx, _cfg = models.ensure_piper_voice(voice)
+            print(f"  ✓ piper voice {voice} ({onnx.stat().st_size / 1e6:.1f} MB)")
+        except Exception as e:
+            print(f"  ✗ piper voice {voice} failed: {e}")
+    if cfg.assistant.wake_word.mode == "pretrained":
+        try:
+            models.ensure_openwakeword([cfg.assistant.wake_word.model])
+            print(f"  ✓ wake word model {cfg.assistant.wake_word.model}")
+        except Exception as e:
+            print(f"  ✗ wake word model failed: {e}")
+    else:
+        # kws mode runs its own whisper-tiny matcher, independent of the
+        # (usually larger) request model above.
+        try:
+            models.ensure_whisper("tiny")
+            print("  ✓ wake word whisper-tiny (kws mode)")
+        except Exception as e:
+            print(f"  ✗ wake word whisper-tiny failed: {e}")
+    total_after = sum(f.stat().st_size for f in paths.DATA_DIR.rglob("*") if f.is_file())
+    print(f"\nmodel cache: {paths.DATA_DIR} "
+          f"({total_before / 1e6:.1f} MB -> {total_after / 1e6:.1f} MB)")
+    return 0
+
+
 def _cmd_ask(request: str, speak: bool) -> int:
     """Text-mode request: same plan/act/verify path the microphone triggers."""
     import asyncio
@@ -133,7 +182,9 @@ def _cmd_ctl(cmd: str) -> int:
     from .ipc import ctl_client
 
     async def run():
-        return await ctl_client(cmd)
+        # `warm` loads whisper + piper (up to a minute on a cold cache);
+        # everything else answers instantly.
+        return await ctl_client(cmd, timeout=300.0 if cmd == "warm" else 60.0)
 
     reply = asyncio.run(run())
     if not reply.get("ok"):
@@ -144,6 +195,10 @@ def _cmd_ctl(cmd: str) -> int:
               f"assistant={reply.get('assistant')}")
     elif cmd == "abort":
         print("aborted — any running action loop was killed")
+    elif cmd in ("warm", "unload"):
+        print(f"daemon={reply.get('rss_mb', 0):.1f} MiB  "
+              f"hud={reply.get('children_mb', 0):.1f} MiB  "
+              f"total={reply.get('rss_mb', 0) + reply.get('children_mb', 0):.1f} MiB")
     else:
         print(f"muted={reply.get('muted')}")
     return 0
@@ -252,9 +307,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return _cmd_doctor(not args.no_network)
+    if args.command == "install-service":
+        from .unit import main as unit_main
+
+        return unit_main()
+    if args.command == "models":
+        return _cmd_models()
     if args.command == "init":
         return _cmd_init()
-    if args.command in ("mute", "unmute", "mute-toggle", "state", "abort"):
+    if args.command in ("mute", "unmute", "mute-toggle", "state", "abort",
+                        "warm", "unload"):
+        return _cmd_ctl(args.command)
         return _cmd_ctl(args.command)
     if args.command == "ask":
         return _cmd_ask(" ".join(args.request), speak=not args.no_speak)

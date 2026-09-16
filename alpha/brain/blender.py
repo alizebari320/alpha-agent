@@ -43,7 +43,7 @@ def is_blender_request(request: str) -> bool:
 
 
 def _pick_template(request: str):
-    for key, t in _TEMPLATES.items():
+    for t in _TEMPLATES.values():
         if t["match"].search(request):
             return _HERE / "blender_templates" / t["file"]
     return None

@@ -39,6 +39,10 @@ packages = ["alpha"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Colab notebooks mirror the official openWakeWord training notebook cell for
+# cell (they use `!pip` magics and its import order on purpose), so they are not
+# linted here. The Python they contain is exercised by scripts/train-wake-word.py.
+extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "S", "BLE", "PLW"]
@@ -63,6 +67,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests legitimately unpack more than they assert on.
 "tests/*" = ["RUF059", "S101"]
+# Blender scene templates use `random` for procedural placement, not secrets.
+"alpha/brain/blender_templates/*" = ["S311"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

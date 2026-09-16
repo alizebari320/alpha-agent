@@ -1,5 +1,6 @@
 """M5 tests: coordinate scaling (spec: #1 failure mode), SoM, password lock."""
 
+from typing import ClassVar
 
 from alpha.vision import (
     AtspiElement,
@@ -92,7 +93,7 @@ def test_password_lock_detection():
         pass
 
     class FakeDaemon:
-        monitors = [MON]
+        monitors: ClassVar[list] = [MON]
 
     v = Vision(FakeWorker(), FakeDaemon(), password_lock=True)
     els = _els()
