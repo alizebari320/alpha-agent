@@ -10,44 +10,67 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pinned in one place: the project requires >=3.11,<3.12 because
+  # tflite-runtime (openwakeword's Linux backend) has no cp313 wheels.
+  PYTHON_VERSION: "3.11"
+
 jobs:
   lint:
-    name: ruff (Python 3.11)
+    name: ruff
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      # `uv venv` + explicit `.venv/bin/...` paths: `uv pip install --system`
+      # against a uv-managed interpreter fails with "externally managed".
+      - name: Create the venv
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Install (dev extras)
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install -e ".[dev]"
       - name: ruff check
-        run: ruff check .
-      - name: ruff format check (non-blocking, informational)
-        run: ruff format --check . || true
+        run: .venv/bin/ruff check .
+      - name: ruff format (informational, does not fail the build)
+        run: .venv/bin/ruff format --check . || true
 
   test:
-    name: pytest (Python 3.11)
+    name: pytest
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - name: Create the venv
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Install (dev extras)
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install -e ".[dev]"
       - name: Unit tests
-        # These need no network, no microphone, no display, no root and no
-        # /dev/uinput: every hardware path is behind a seam that tests mock.
-        run: pytest -q
-      - name: Verify the CLI entry point is importable and self-describing
+        # No network, no microphone, no display, no root, no /dev/uinput: every
+        # hardware path (mic, uinput, portal, GTK) sits behind a seam that the
+        # tests mock or simply do not touch.
+        run: .venv/bin/pytest -q
+      - name: The CLI must be importable and self-describing
         run: |
-          python -m alpha --version
-          python -m alpha --help
+          .venv/bin/python -m alpha --version
+          .venv/bin/python -m alpha --help > /dev/null
+      - name: Every command documented in the README must exist in the CLI
+        run: |
+          set -euo pipefail
+          help_text="$(.venv/bin/python -m alpha --help)"
+          missing=0
+          for cmd in doctor init models install-service mute unmute mute-toggle \
+                     state warm unload abort install-hotkeys ask recipes vision-test; do
+            if ! grep -q "\b$cmd\b" <<<"$help_text"; then
+              echo "::error::'alpha $cmd' is documented but not in the CLI"
+              missing=1
+            fi
+          done
+          exit $missing
 
   package:
     name: build sdist + wheel
@@ -56,15 +79,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
       - run: uv build
       - name: The wheel must ship the unit template but no key, model or state
         run: |
-          python - <<'PY'
-          import glob, zipfile, sys
+          python3 - <<'PY'
+          import glob, sys, zipfile
           required = ["alpha/templates/alpha.service"]
-          bad = []
-          seen = set()
+          bad, seen = [], set()
           for whl in glob.glob("dist/*.whl"):
               with zipfile.ZipFile(whl) as z:
                   names = z.namelist()
@@ -86,6 +109,12 @@ jobs:
               sys.exit(1)
           print("wheel contents look right")
           PY
+      - name: The wheel must be installable and run
+        run: |
+          uv venv /tmp/smoke --python ${{ env.PYTHON_VERSION }}
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/alpha --version
+          /tmp/smoke/bin/alpha --help > /dev/null
       - uses: actions/upload-artifact@v4
         with:
           name: dist

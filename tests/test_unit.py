@@ -71,3 +71,22 @@ def test_drift_detects_stale_unit(tmp_path, monkeypatch):
     cfg_limit, deployed = unit_mod.drift()
     assert (cfg_limit, deployed) == (2048, 1024)
     assert cfg_limit != deployed  # what doctor reports as drift
+
+
+def test_install_service_exits_nonzero_when_it_cannot_install(tmp_path, monkeypatch, capsys):
+    """A failed install must not report success to scripts/CI.
+
+    Regression: main() printed "could not install unit: ..." and still returned
+    0, so `alpha install-service && systemctl --user restart alpha` looked fine
+    while nothing had been written.
+    """
+    from alpha import unit as unit_mod
+
+    def boom(*a, **k):
+        raise unit_mod.FileNotFoundError("no config at /nonexistent")
+
+    monkeypatch.setattr(unit_mod, "render", boom)
+    monkeypatch.setattr(unit_mod, "unit_path", lambda: tmp_path / "alpha.service")
+    monkeypatch.setattr(unit_mod.paths, "ensure_dirs", lambda: None)
+    assert unit_mod.main() == 1
+    assert "could not" in capsys.readouterr().err

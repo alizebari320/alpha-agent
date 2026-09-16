@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from . import paths
@@ -113,12 +114,15 @@ def main() -> int:
     """`alpha install-service` — make systemd match the config."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     paths.ensure_dirs()
-    cfg_limit, before = drift()
     changed, msg = install(restart=True)
+    if not changed and msg.startswith(("could not", "daemon-reload")):
+        # A failed install must not exit 0: scripts and CI chain on this.
+        print(f"alpha install-service: {msg}", file=sys.stderr)
+        return 1
     _, after = drift()
     print(f"unit: {unit_path()}")
-    print(f"MemoryMax: {before if before is not None else 'not deployed'} MB "
-          f"-> {after} MB (config says {cfg_limit} MB)")
+    if after is not None:
+        print(f"MemoryMax: {after} MB (from config.toml)")
     print(msg + (" (restarted alpha)" if changed else ""))
     return 0
 
