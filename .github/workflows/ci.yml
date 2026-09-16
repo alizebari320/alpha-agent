@@ -21,10 +21,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No `python-version:` input: that makes setup-uv create *and activate* a
+      # .venv itself ("Activating python venv"), after which our own `uv venv`
+      # fails with "Failed to create virtual environment". Install the
+      # interpreter explicitly instead and own the venv ourselves.
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
       # `uv venv` + explicit `.venv/bin/...` paths: `uv pip install --system`
       # against a uv-managed interpreter fails with "externally managed".
       - name: Create the venv
@@ -43,8 +48,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
       - name: Create the venv
         run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Install (dev extras)
@@ -79,8 +85,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
       - run: uv build
       - name: The wheel must ship the unit template but no key, model or state
         run: |
