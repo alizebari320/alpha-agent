@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-18
+
 ### Fixed
 
 - **The daemon never supervised its HUD child — this is why "it didn't
