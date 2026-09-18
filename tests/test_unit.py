@@ -113,3 +113,80 @@ def test_install_service_exits_nonzero_when_it_cannot_install(tmp_path, monkeypa
     monkeypatch.setattr(unit_mod.paths, "ensure_dirs", lambda: None)
     assert unit_mod.main() == 1
     assert "could not" in capsys.readouterr().err
+
+
+class _FakeTranscriber:
+    """Stands in for whisper-tiny so wake matching is testable without audio."""
+
+    def __init__(self, text):
+        self._text = text
+
+    def transcribe(self, pcm):
+        return self._text
+
+
+def _wake_for(heard: str, phrases=("hey alpha", "hi alpha")):
+    from alpha.wake import KWSWake
+
+    return KWSWake(list(phrases), transcriber=_FakeTranscriber(heard))
+
+
+def test_wake_accepts_every_configured_phrase():
+    """'hi alpha' must wake Alpha — it is the phrase users reach for; whisper
+    tiny transcribes it as 'high alpha.', which the old single-phrase matcher
+    rejected outright."""
+    import numpy as np
+
+    silence = np.zeros(1600, dtype=np.int16)
+    for heard in ("Hey, Alfa.", "high alpha.", "Hi, Alpha what time is it?",
+                  "Okay Alpha", "Hey, Alpha, how are you?"):
+        assert _wake_for(heard).feed_utterance(silence) is True, heard
+
+
+def test_wake_accepts_mangled_greetings():
+    """Regression: real whisper-tiny output for a spoken wake word mangles the
+    greeting half ('hi alpha' -> 'Ha, y'all for.' on a noisy mic, 'high alpha.'
+    on a clean one). Neither the exact phrase nor per-word matching fired on the
+    mangled form, so Alpha never woke. The greeting-variant rule accepts any
+    common opening once the NAME is clear; the sliding window handles the
+    'high alpha.' form.
+    """
+    import numpy as np
+
+    silence = np.zeros(1600, dtype=np.int16)
+    # observed transcriptions of spoken greetings + the configured phrases
+    for heard in ("high alpha.", "High, Alpha.", "hello alfa", "okay alfa",
+                  "hi alfa", "Hey Alfa!", "hello alpha"):
+        assert _wake_for(heard).feed_utterance(silence) is True, heard
+    # ... but the name still has to be there, so these stay false
+    for heard in ("Hi, Siri.", "Hey, computer.", "high there.", "hi", "okay"):
+        assert _wake_for(heard).feed_utterance(silence) is False, heard
+
+
+def test_wake_ignores_ordinary_speech():
+    """Regression: background speech woke Alpha for real.
+
+    The journal showed `wake! kws fuzzy 'hey alfa' ~ 'half' (0.67)` while a
+    video was playing, so a single stray word could open the microphone and
+    start a 15 s recording. Short words must also match almost exactly, so a
+    transcript with no real phrase in it must never wake.
+    """
+    import numpy as np
+
+    silence = np.zeros(1600, dtype=np.int16)
+    for heard in ("and we're now able to put half of this on this.",
+                  "That's it for now, see you in the next video.",
+                  "the doubt to be able to see me elsewhere.",
+                  "I didn't laugh, so I had to.", "Let's go.", "what time is it"):
+        assert _wake_for(heard).feed_utterance(silence) is False, heard
+
+
+def test_wake_config_exposes_a_phrase_list():
+    from alpha.config import WakeWordConfig
+
+    assert WakeWordConfig().wake_phrases() == ["hey alpha"]
+    assert WakeWordConfig(phrase="yo alpha").wake_phrases() == ["yo alpha"]
+    assert WakeWordConfig(phrases=["hey alpha", "hi alpha"]).wake_phrases() == [
+        "hey alpha", "hi alpha"]
+    # a blank list must not leave the matcher with nothing to match
+    assert WakeWordConfig(phrases=[]).wake_phrases() == ["hey alpha"]

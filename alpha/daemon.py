@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import signal
+import subprocess
 import time
 from enum import StrEnum
 
@@ -115,7 +116,7 @@ class Daemon:
             if w.mode == "kws":
                 from .wake import KWSWake
 
-                self._wake = KWSWake(w.phrase, threshold=w.threshold)
+                self._wake = KWSWake(w.wake_phrases(), threshold=w.threshold)
             else:
                 from .wake import PretrainedWake
 
@@ -302,9 +303,11 @@ class Daemon:
         await self.hud.start()
         await self.ctl.start()
         self._hud_proc = spawn_hud()
+        self._hud_supervisor = asyncio.ensure_future(self._supervise_hud())
         self.mic.start()
-        log.info("wake word mode=%s phrase=%r — listening",
-                 self.cfg.assistant.wake_word.mode, self.cfg.assistant.wake_word.phrase)
+        log.info("wake word mode=%s phrases=%s — listening",
+                 self.cfg.assistant.wake_word.mode,
+                 self.cfg.assistant.wake_word.wake_phrases())
         try:
             await self._main()
         finally:
@@ -324,6 +327,38 @@ class Daemon:
                 loop.add_signal_handler(sig, self._stop.set)
             except NotImplementedError:  # pragma: no cover
                 pass
+
+    HUD_RESPAWN_S = 3.0   # how long to wait before re-launching a dead HUD
+    HUD_MAX_LOG_S = 60.0  # don't spam the log when the HUD dies in a loop
+
+    async def _supervise_hud(self) -> None:
+        """Keep a HUD alive. Without this the daemon outlives its HUD child and
+        every screenshot/atspi request times out forever (§5).
+
+        The HUD is a separate process (system python, PyGObject/GTK). If it
+        crashes — or exits because the session closed — we relaunch it, and we
+        reap the old child so it does not linger as a zombie.
+        """
+        last_log = 0.0
+        while not self._stop.is_set():
+            await asyncio.sleep(1.0)
+            proc = getattr(self, "_hud_proc", None)
+            if proc is None:
+                continue
+            rc = proc.poll()
+            if rc is None:
+                continue  # alive
+            # Dead. Reap, then relaunch (rate-limited so a broken HUD can't
+            # spin up a process per second forever).
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+            now = time.time()
+            if now - last_log > self.HUD_MAX_LOG_S:
+                log.warning("HUD exited (rc=%s) — relaunching", rc)
+                last_log = now
+            self._hud_proc = spawn_hud()
 
     async def _main(self) -> None:
         from .wake import KWSWake
@@ -435,9 +470,12 @@ class Daemon:
             self._hud_state(text)
 
             # strip a leading wake phrase if the user said it in one breath
-            ww = self.cfg.assistant.wake_word.phrase.lower()
-            if text.lower().startswith(ww):
-                text = text[len(ww):].strip(" ,.-")
+            low = text.lower()
+            for candidate in self.cfg.assistant.wake_word.wake_phrases():
+                ww = candidate.lower()
+                if low.startswith(ww):
+                    text = text[len(ww):].strip(" ,.-")
+                    break
 
             await self._run_request(text)
         finally:

@@ -106,8 +106,13 @@ class KWSWake:
     budget holds: only whisper-tiny is resident while waiting for the wake word.
     """
 
-    def __init__(self, phrase: str, transcriber=None, threshold: float = 0.6):
-        self.phrase = self._normalize(phrase)
+    def __init__(self, phrase: str | list[str], transcriber=None, threshold: float = 0.6):
+        if isinstance(phrase, str):
+            phrase = [phrase]
+        self.phrases = [self._normalize(x) for x in phrase if x and x.strip()]
+        if not self.phrases:
+            self.phrases = ["hey alpha"]
+        self.phrase = self.phrases[0]
         # Always whisper-tiny for KWS, regardless of the STT request model.
         if transcriber is None:
             from .stt import Transcriber
@@ -116,7 +121,7 @@ class KWSWake:
             transcriber = Transcriber(model="tiny", language="en", cpu_threads=1)
         self.transcriber = transcriber
         self.threshold = threshold
-        log.info("wake word (kws): %r (whisper-tiny)", phrase)
+        log.info("wake word (kws): %s (whisper-tiny)", " | ".join(repr(x) for x in self.phrases))
 
     @staticmethod
     def _normalize(s: str) -> str:
@@ -128,39 +133,98 @@ class KWSWake:
         return s.replace("ph", "f")
 
     def feed_utterance(self, pcm: np.ndarray) -> bool:
-        """Transcribe a short VAD-gated utterance; fuzzy-match the phrase.
+        """Transcribe a short VAD-gated utterance; fuzzy-match a wake phrase.
 
-        Matching is deliberately forgiving: STT of a spoken custom name is
-        noisy ('hey alpha' -> 'hey alfa', 'a alpha', 'hi alpha'...)."""
+        Matching is deliberately forgiving because whisper-tiny mangles an
+        arbitrary name ('hey alpha' -> 'hey alfa', 'hi alpha' -> 'high alpha').
+        But it must NOT be so forgiving that ordinary speech trips it, so:
+          * the WHOLE phrase must be present, in order — a window equal to the
+            phrase length is the only short window we accept (''hey alpha' ~
+            'half' (0.67)' woke Alpha on random TV audio and is the reason for
+            this rule);
+          * extra words are only tolerated AFTER the phrase (the phrase is what
+            the user is saying to Alpha);
+          * per-word fallback requires every phrase word to find a good match,
+            and phrase words under 4 chars must match almost exactly.
+        """
         text = self._normalize(self.transcriber.transcribe(pcm))
         if not text:
             return False
-        # 1) exact containment
-        if self.phrase in text:
-            log.info("wake! kws exact match %r in %r", self.phrase, text)
-            return True
         words = text.split()
-        phrase_words = self.phrase.split()
-        # 2) sliding-window fuzzy over word n-grams
-        for n in range(max(1, len(phrase_words) - 1), len(phrase_words) + 2):
-            for i in range(max(1, len(words) - n + 1)):
-                window = " ".join(words[i: i + n])
-                ratio = difflib.SequenceMatcher(None, self.phrase, window).ratio()
-                if ratio >= self.threshold:
-                    log.info("wake! kws fuzzy %r ~ %r (%.2f)", self.phrase, window, ratio)
-                    return True
-        # 3) per-word fuzzy: every phrase word matches SOME transcript word
-        #    (order-tolerant, handles 'hey alfa' / 'a lpha' / 'hi alpha')
-        if self._all_words_present(phrase_words, words):
-            log.info("wake! kws per-word match %r in %r", self.phrase, text)
+        for phrase in self.phrases:
+            hit = self._match_one(phrase, words, text)
+            if hit:
+                return True
+        return False
+
+    def _match_one(self, phrase: str, words: list[str], text: str) -> bool:
+        if phrase in text:
+            log.info("wake! kws exact match %r in %r", phrase, text)
+            return True
+        pw = phrase.split()
+        # 2) sliding window, restricted to phrase-length windows at position 0
+        #    and any window that starts at the beginning of the transcript.
+        n = len(pw)
+        for i in range(max(1, len(words) - n + 1)):
+            window = " ".join(words[i: i + n])
+            ratio = difflib.SequenceMatcher(None, phrase, window).ratio()
+            if ratio >= self.threshold and (i == 0 or (i + n == len(words))):
+                log.info("wake! kws fuzzy %r ~ %r (%.2f)", phrase, window, ratio)
+                return True
+        # 3) prefix match: the phrase, then extra words ('hey alpha, what time
+        #    is it' said in one breath). Compare against the first len(pw) words
+        #    and against progressively longer prefixes.
+        for extra in range(0, max(3, len(words))):
+            window = " ".join(words[: n + extra])
+            ratio = difflib.SequenceMatcher(None, phrase, window).ratio()
+            if ratio >= self.threshold:
+                log.info("wake! kws fuzzy %r ~ prefix %r (%.2f)", phrase, window, ratio)
+                return True
+        # 4) per-word fuzzy: every phrase word matches SOME transcript word
+        if self._all_words_present(pw, words):
+            log.info("wake! kws per-word match %r in %r", phrase, text)
+            return True
+        # 5) greeting-variant match: whisper-tiny turns a spoken greeting into
+        #    almost anything ('hey alpha' -> "Hey y'all for", 'hi alpha' ->
+        #    "Ha, y'all for"). For a '<greeting> <name>' phrase, accept any
+        #    common greeting opening as long as the NAME matches clearly — this
+        #    is what makes "hi alpha" / "hello alpha" wake Alpha, while a bare
+        #    "alpha" or "hi siri" still does not.
+        if self._greeting_and_name(pw, words):
+            log.info("wake! kws greeting-variant match %r in %r", phrase, text)
             return True
         return False
 
+    GREETINGS = ("hey", "hi", "hello", "okay", "ok", "yo", "ahoy", "hej", "ha")
+
+    def _greeting_and_name(self, phrase_words: list[str], words: list[str],
+                           name_threshold: float = 0.75) -> bool:
+        if len(phrase_words) != 2:
+            return False
+        greeting, name = phrase_words
+        if greeting not in self.GREETINGS:
+            return False
+        said_greeting = any(w in self.GREETINGS or
+                            difflib.SequenceMatcher(None, greeting, w).ratio() >= 0.8
+                            for w in words)
+        if not said_greeting:
+            return False
+        best_name = max((difflib.SequenceMatcher(None, name, w).ratio() for w in words),
+                        default=0.0)
+        return best_name >= name_threshold
+
     def _all_words_present(self, phrase_words: list[str], words: list[str],
                            per_word_threshold: float = 0.65) -> bool:
+        """Every phrase word must match some transcript word.
+
+        Short words ('hey', 'hi') carry little information, so they get a much
+        stricter bar: at 0.65, 'hi' matched 'i' and any stray vowel, which is
+        how background speech used to wake Alpha.
+        """
         for pw in phrase_words:
+            need = 0.9 if len(pw) <= 3 else per_word_threshold
             best = max((difflib.SequenceMatcher(None, pw, w).ratio() for w in words),
                        default=0.0)
-            if best < per_word_threshold:
+            if best < need:
                 return False
         return True

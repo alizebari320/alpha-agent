@@ -19,7 +19,10 @@ Ops:
 from __future__ import annotations
 
 import base64
+import logging
 import secrets as _secrets
+
+log = logging.getLogger(__name__)
 
 MAX_ELEMENTS = 220
 MAX_DEPTH = 14
@@ -63,6 +66,12 @@ class ScreenCast:
             loop = GLib.MainLoop.new(ctx, False)
             results: dict = {}
 
+            # Every portal round-trip is bounded: if the user never answers the
+            # permission dialog, loop.run() below would block the HUD worker
+            # thread FOREVER, wedging screenshot AND atspi for the whole
+            # session (a hung init() makes every later op time out).
+            PORTAL_TIMEOUT_S = 25.0
+
             def subscribe(token: str, cb):
                 req_path = f"{PORTAL_BASE}/request/{sender}/{token}"
                 return bus.signal_subscribe(
@@ -75,6 +84,17 @@ class ScreenCast:
                 results["_code"] = code
                 loop.quit()
 
+            def run_timed(what: str) -> bool:
+                """Run the portal loop, but give up after PORTAL_TIMEOUT_S."""
+                results["_code"] = None
+                GLib.timeout_add_seconds(int(PORTAL_TIMEOUT_S), loop.quit)
+                loop.run()
+                if results.get("_code") is None:
+                    log.warning("portal %s timed out after %.0fs (no user answer)",
+                                what, PORTAL_TIMEOUT_S)
+                    return False
+                return True
+
             GLib.MainContext.push_thread_default(ctx)
             try:
                 # ---- 1. CreateSession
@@ -85,7 +105,8 @@ class ScreenCast:
                               GLib.Variant("(a{sv})", ({"handle_token": GLib.Variant("s", token),
                                                          "session_handle_token": GLib.Variant("s", "s" + token)},)),
                               None, Gio.DBusCallFlags.NONE, -1, None)
-                loop.run()
+                if not run_timed("CreateSession"):
+                    return {"ok": False, "error": "CreateSession timed out (no portal answer)"}
                 session = results.get("session_handle")
                 if not session:
                     return {"ok": False, "error": "CreateSession failed (no session_handle)"}
@@ -105,7 +126,8 @@ class ScreenCast:
                               "SelectSources",
                               GLib.Variant("(oa{sv})", (session, sel_opts)),
                               None, Gio.DBusCallFlags.NONE, -1, None)
-                loop.run()
+                if not run_timed("SelectSources"):
+                    return {"ok": False, "error": "SelectSources timed out (no portal answer)"}
                 if results.get("_code") != 0:
                     return {"ok": False, "error": f"SelectSources denied (code {results.get('_code')})"}
                 if results.get("restore_token"):
@@ -118,7 +140,8 @@ class ScreenCast:
                               "Start",
                               GLib.Variant("(osa{sv})", (session, "", start_opts)),
                               None, Gio.DBusCallFlags.NONE, -1, None)
-                loop.run()
+                if not run_timed("Start"):
+                    return {"ok": False, "error": "screen share prompt timed out — click Share in the HUD"}
                 if results.get("_code") != 0:
                     return {"ok": False, "error": f"Start denied/cancelled (code {results.get('_code')})"}
                 streams = results.get("streams") or []

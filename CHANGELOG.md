@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`hi alpha` never woke Alpha, and a single stray word did.** Two bugs in
+  one matcher, both found by testing against real audio instead of reading the
+  code:
+  - `KWSWake` knew exactly one phrase. Over a real microphone whisper-tiny
+    hears "hi alpha" as *high alpha* and "hey alpha" as *hey alfa*, so the
+    literal `phrase = "hey alpha"` missed anything but the luckiest
+    transcription. Wake words now take a **list**: `phrases = ["hey alpha",
+    "hi alpha", ...]` — any of them wakes Alpha, and the daemon log shows which
+    list it loaded. The singular `phrase` still works.
+  - The fuzzy window matched *any* n-gram of the transcript, so
+    `'hey alfa' ~ 'half' (0.67)` cleared the 0.6 threshold while a video was
+    playing. Alpha woke on TV audio, recorded 15 seconds of it, and ran a
+    request on a transcript of a YouTube video — the "busy" errors and the
+    phantom Arabic transcripts traced back here. The whole phrase must now be
+    present in order, windows must start at the beginning of the utterance,
+    and phrase words of 3 characters or fewer need a near-exact match (at 0.65
+    `hi` matched stray vowels in any word).
+- **The portal round-trips in the HUD screenshot path could hang forever.**
+  `ScreenCast.init()` ran `loop.run()` with no bound; if nobody answers the
+  permission dialog the call blocks the HUD worker thread indefinitely, and
+  every later `screenshot` **and** `atspi` op then times out for the rest of
+  the session. Each round-trip is now bounded (25 s) and returns a spoken,
+  actionable error ("click Share in the HUD") instead of wedging.
+- Silence a ruff `RUF006` on the HUD supervisor task (keep a reference so it
+  is not garbage-collected mid-flight).
+
+
 ## [0.1.2] - 2026-09-16
 
 ### Fixed

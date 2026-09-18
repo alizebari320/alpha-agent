@@ -32,7 +32,7 @@ OPENCODE_AUTH = Path("~/.local/share/opencode/auth.json").expanduser()
 
 # Providers we prefer when picking Alpha's default runtime, in order.
 PREFERRED_PROVIDER_KEYS = ("agentrouter-openai", "agentrouter", "openrouter")
-PREFERRED_MODELS = ("glm-5.3", "claude-sonnet-4-5", "claude-sonnet-5")
+PREFERRED_MODELS = ("glm-5.3", "claude-sonnet-4-5", "claude-sonnet-5", "apmix/claude-opus-4-8-free", "apmix/llama-3.3-70b-free", "apmix/deepseek-r1-free")
 
 
 @dataclass

@@ -39,7 +39,18 @@ class WakeWordConfig:
     # ANY name immediately. This is the DEFAULT because it makes the
     # configured wake phrase work out of the box with zero training.
     mode: str = "kws"  # pretrained | kws
+    # Any of these wakes Alpha. `phrases` is the list form; `phrase` is kept
+    # for compatibility (docs and existing configs use the singular). Setting
+    # either replaces the default — a config with only `phrase = "hey alpha"`
+    # accepts that one phrase, not the default list.
     phrase: str = "hey alpha"
+    phrases: list[str] | None = None
+
+    def wake_phrases(self) -> list[str]:
+        """The ordered phrase list the matcher should accept."""
+        if self.phrases:
+            return [p for p in self.phrases if p and p.strip()]
+        return [self.phrase] if self.phrase and self.phrase.strip() else ["hey alpha"]
     # Only used when mode="pretrained". Must be one of wake.BUNDLED_WAKEWORDS
     # unless a custom trained model exists in ~/.local/share/alpha/wakewords/.
     model: str = "hey_jarvis"
@@ -199,9 +210,12 @@ def parse_config(data: dict[str, Any]) -> Config:
     _check_unknown_keys("assistant", a, AssistantConfig, cfg)
     w = a.get("wake_word", {}) or {}
     _check_unknown_keys("assistant.wake_word", w, WakeWordConfig, cfg)
+    raw_phrases = w.get("phrases")
     cfg.assistant.wake_word = WakeWordConfig(
         mode=str(w.get("mode", "kws")),
         phrase=str(w.get("phrase", f"hey {cfg.assistant.name}")),
+        phrases=([str(p) for p in raw_phrases] if isinstance(raw_phrases, (list, tuple))
+                 else None),
         model=str(w.get("model", "hey_jarvis")),
         threshold=float(w.get("threshold", 0.6)),
         refractory_s=float(w.get("refractory_s", 2.0)),

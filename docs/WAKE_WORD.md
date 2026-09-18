@@ -32,7 +32,14 @@ model (below) and switch to `pretrained` with it.
 wake_word = { mode = "kws", phrase = "hey computer", threshold = 0.6 }
 ```
 
-or:
+or, if you say the name more than one way (recommended — whisper-tiny
+hears a spoken name differently each time, so list every variant you use):
+
+```toml
+[assistant.wake_word]
+mode = "kws"
+phrases = ["hey alpha", "hi alpha", "hey alfa", "okay alpha"]
+```
 
 ```bash
 alpha init            # interactive: also sets the assistant name
@@ -45,6 +52,17 @@ Tips, from testing:
 - **2–4 syllables ending in a stressed vowel** work best ("hey alpha", "hey
   jarvis", "ok computer"). One-syllable phrases false-trigger constantly.
 - The matcher normalises phonetics (`ph` → `f`), so "hey alfa" also matches.
+- **`phrases` beats `phrase`.** Over a real microphone whisper-tiny turns
+  "hi alpha" into *high alpha* and "hey alpha" into *hey alfa* often enough
+  that a single literal phrase misses. List the variants you actually say and
+  any of them wakes Alpha; the log line `wake word (kws): '...' | '...'` shows
+  the list it loaded.
+- The matcher must find the **whole** phrase in order. A single stray word
+  no longer wakes Alpha: in testing, background video audio transcribed as
+  *"...put half of this on this."* used to fuzzy-match `hey alfa` at 0.67 and
+  open the mic on a 15-second recording of a TV. Windows must start at the
+  beginning of the utterance, and short words (`hey`, `hi`) now need an almost
+  exact match, since at 0.65 they matched any vowel.
 - `threshold` (0–1) is the per-word fuzzy threshold. Raise it to 0.7+ if you get
   false wakes; lower to 0.5 if you have to shout. The matcher requires **all**
   words of the phrase to match, not just one.

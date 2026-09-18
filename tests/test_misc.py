@@ -334,3 +334,82 @@ def test_noise_floor_adapts_to_room_tone_but_never_below_the_absolute_minimum():
     assert not wake_gate_opens(0.5, 400.0, floor)
     assert wake_gate_opens(0.5, 900.0, floor)
     assert wake_gate_opens(0.5, 2500.0, floor)
+
+
+# --- HUD supervision ------------------------------------------------------
+
+def test_daemon_restarts_a_dead_hud(monkeypatch):
+    """Regression: the daemon spawned the HUD once and never looked at it
+    again. When the HUD died (a Wayland hiccup, a GTK crash, the session
+    closing) the child became a zombie and every later screenshot/atspi call
+    timed out forever — the assistant went deaf and blind with no error.
+    """
+    import asyncio
+
+    from alpha import daemon as d
+
+    class _FakeProc:
+        def __init__(self, rc):
+            self._rc = rc
+
+        def poll(self):
+            return self._rc
+
+        def wait(self, timeout=None):
+            return self._rc
+
+    spawns = []
+    # iteration 1: the HUD is already dead (zombie, rc=0) -> relaunch
+    # iteration 2: the replacement is alive (poll -> None) -> leave it alone
+    procs = [_FakeProc(0), _FakeProc(None)]
+
+    def fake_spawn():
+        spawns.append(len(spawns))
+        # the 1st real spawn hands back the replacement (procs[1])
+        return procs[len(spawns)]
+
+    monkeypatch.setattr(d, "spawn_hud", fake_spawn)
+
+    async def main():
+        dm = d.Daemon.__new__(d.Daemon)   # no config/model loading
+        dm._stop = asyncio.Event()
+        dm._hud_proc = procs[0]           # the already-dead child
+        ticks = 0
+
+        async def fake_sleep(seconds):
+            nonlocal ticks
+            ticks += 1
+            # tick 1: notice the dead child, tick 2: relaunch done and alive,
+            # tick 3: nothing more to do -> stop the supervisor.
+            if ticks >= 3:
+                dm._stop.set()
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        await dm._supervise_hud()
+
+    asyncio.run(main())
+    # the dead child was replaced exactly once, then the live one was left alone
+    assert len(spawns) == 1, spawns
+
+
+
+def test_portal_waits_are_all_bounded():
+    """Regression: ScreenCast.init() called loop.run() with no timeout, so if
+    the user never answered the portal permission dialog the HUD worker thread
+    blocked FOREVER — screenshot AND atspi then timed out for the whole
+    session, with no error anywhere. Every portal wait must go through the
+    timed wrapper (structural check; gi is not importable in the venv, so the
+    HUD's system-python code is checked by source inspection).
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "alpha" / "hud" / "worker.py"
+           ).read_text()
+    # the timed wrapper exists...
+    assert "def run_timed(" in src
+    assert "PORTAL_TIMEOUT_S" in src
+    # ...and no bare loop.run() remains (the three waits are all timed now)
+    import re
+
+    body = src[src.index("def run_timed"):]
+    assert "loop.run()" not in re.sub(r"\n\s+loop.run\(\)\n", "\n", body)

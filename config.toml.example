@@ -24,6 +24,11 @@ language = "en"                       # HUD locale
 # more CPU than Tier 1 — pick a bundled model for maximum battery life.
 mode = "kws"                      # kws (any name, instant default) | pretrained
 phrase = "hey alpha"              # free-form in kws mode
+# phrases accepts several spellings of the wake word. whisper-tiny mangles
+# an arbitrary name when it hears it over a real mic ("hi alpha" often comes
+# back as "high alpha", "hey alpha" as "hey alfa"), so list every way you say
+# it and any of them wakes Alpha. Optional — `phrase` alone works too.
+phrases = ["hey alpha", "hi alpha", "hey alfa", "hi alfa"]
 model = "hey_jarvis"              # only used in pretrained mode
 threshold = 0.6
 refractory_s = 2.0
