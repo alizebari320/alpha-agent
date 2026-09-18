@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The daemon never supervised its HUD child — this is why "it didn't
+  work".** `spawn_hud()` was called once at startup and never looked at
+  again. When the HUD process died (a Wayland hiccup, a GTK crash, or the
+  session closing) the child became a zombie (`<defunct>`) and the daemon kept
+  broadcasting requests into a dead socket: **every** `screenshot` and
+  `atspi` call then timed out forever, the agent loop crawled through
+  8 s + 15 s timeouts per step, and `alpha ask` hung until the heat death of
+  the universe. The daemon now supervises the HUD: it notices a dead child,
+  reaps it so it cannot linger as a zombie, and relaunches it (rate-limited so
+  a broken HUD cannot spin up a process per second). Verified live: killing the
+  HUD produced `HUD exited (rc=0) — relaunching` and a working HUD one second
+  later, with `atspi` going from **0 elements / timeout** to **38 elements**.
 - **`hi alpha` never woke Alpha, and a single stray word did.** Two bugs in
   one matcher, both found by testing against real audio instead of reading the
   code:
@@ -25,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     present in order, windows must start at the beginning of the utterance,
     and phrase words of 3 characters or fewer need a near-exact match (at 0.65
     `hi` matched stray vowels in any word).
+  - whisper-tiny destroys the *greeting* half of a spoken wake word over a
+    real mic (`hey alpha` -> `Hey y'all for`, `hi alpha` -> `Ha, y'all for`),
+    so a clean name plus a mangled greeting still did not wake Alpha. For a
+    `<greeting> <name>` phrase, any common opening (hey/hi/hello/okay/...) is
+    now accepted as long as the **name** still matches clearly — which is why
+    `hi alpha` and `hello alpha` now wake Alpha while `hi siri` and
+    `hey computer` never do. Verified against real piper-synthesized speech.
 - **The portal round-trips in the HUD screenshot path could hang forever.**
   `ScreenCast.init()` ran `loop.run()` with no bound; if nobody answers the
   permission dialog the call blocks the HUD worker thread indefinitely, and
